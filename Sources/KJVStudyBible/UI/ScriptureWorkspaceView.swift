@@ -170,6 +170,15 @@ public struct ScriptureWorkspaceView: View {
                     }
                 }
 
+                if viewModel.isAudioBarVisible && viewModel.audioPlayer.isActive {
+                    BibleAudioMiniBar(player: viewModel.audioPlayer, theme: viewModel.theme) {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            viewModel.stopChapterAudio()
+                        }
+                    }
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+
                 BottomUtilityBar(viewModel: viewModel)
             }
         }
@@ -211,6 +220,12 @@ public struct ScriptureWorkspaceView: View {
         }
         .sheet(isPresented: $viewModel.showStudyDashboard) {
             StudyDashboardSheet(viewModel: viewModel)
+        }
+        .sheet(isPresented: $viewModel.showReadingPlans) {
+            ReadingPlansSheet(viewModel: viewModel)
+        }
+        .sheet(isPresented: $viewModel.showMemoryDrills) {
+            MemoryDrillsSheet(viewModel: viewModel)
         }
         .sheet(isPresented: $viewModel.showNewStudySheet) {
             NewStudySheet(viewModel: viewModel)
@@ -535,7 +550,9 @@ public struct ScriptureWorkspaceView: View {
             // Verses
             ForEach(viewModel.verses) { verse in
                 let highlight = viewModel.chapterHighlights[verse.verse]
-                let isSelectedVerse = (viewModel.popoverVerse?.id == verse.id) || (viewModel.studyVerse?.id == verse.id && viewModel.showReferencePanel)
+                let isSelectedVerse = (viewModel.popoverVerse?.id == verse.id)
+                    || (viewModel.studyVerse?.id == verse.id && viewModel.showReferencePanel)
+                    || (viewModel.isAudioBarVisible && viewModel.audioSpeakingVerseNumber == verse.verse)
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
                     if viewModel.showVerseNumbers {
                         let hasLinkedNote = !(viewModel.chapterNotesByVerse[verse.verse] ?? []).isEmpty
@@ -779,6 +796,18 @@ public struct ScriptureWorkspaceView: View {
                         menuButton("Reading History", icon: "clock.arrow.circlepath") {
                             viewModel.showMainMenu = false
                             viewModel.showHistorySheet = true
+                        }
+                        menuButton("Bible Reading Plans", icon: "calendar") {
+                            viewModel.showMainMenu = false
+                            viewModel.showReadingPlans = true
+                        }
+                        menuButton("Listen to Chapter (Audio)", icon: "speaker.wave.2") {
+                            viewModel.showMainMenu = false
+                            viewModel.startChapterAudio()
+                        }
+                        menuButton("Scripture Memory Drills", icon: "brain.head.profile") {
+                            viewModel.showMainMenu = false
+                            viewModel.showMemoryDrills = true
                         }
                         menuButton("Reading & Workspace View", icon: "slider.horizontal.3") {
                             viewModel.showMainMenu = false

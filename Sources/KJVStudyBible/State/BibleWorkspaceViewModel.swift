@@ -38,6 +38,11 @@ public final class BibleWorkspaceViewModel: ObservableObject {
     @Published public var showHistorySheet: Bool = false
     @Published public var showMarginOCRScanner: Bool = false
     @Published public var showStudyDashboard: Bool = false
+    @Published public var showReadingPlans: Bool = false
+    @Published public var showMemoryDrills: Bool = false
+    @Published public var audioSpeakingVerseNumber: Int? = nil
+    @Published public var isAudioBarVisible: Bool = false
+    public let audioPlayer = BibleAudioPlayer()
     @Published public var backupExportURL: URL? = nil
     @Published public var activeShareSheetItem: ShareSheetItem? = nil
 
@@ -294,6 +299,34 @@ public final class BibleWorkspaceViewModel: ObservableObject {
             )
             activeStudyTrail = studyDB.studyTrailEntries(studyId: study.id)
         }
+    }
+
+    public func startChapterAudio(startingAtVerse: Int? = nil) {
+        guard !verses.isEmpty else { return }
+        isAudioBarVisible = true
+        audioPlayer.startChapter(
+            title: currentLocationTitle,
+            verses: verses,
+            startingAtVerse: startingAtVerse,
+            onHighlightVerse: { [weak self] vNum in
+                self?.audioSpeakingVerseNumber = vNum
+            },
+            onChapterFinished: { [weak self] in
+                guard let self else { return }
+                self.nextChapter()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    if self.audioPlayer.isActive {
+                        self.startChapterAudio(startingAtVerse: 1)
+                    }
+                }
+            }
+        )
+    }
+
+    public func stopChapterAudio() {
+        audioPlayer.stop(hideBar: true)
+        isAudioBarVisible = false
+        audioSpeakingVerseNumber = nil
     }
 
     public func goBack() {
