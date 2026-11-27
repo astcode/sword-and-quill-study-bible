@@ -948,6 +948,7 @@ public struct ViewSettingsSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var editingCustomPalette: CustomThemePalette? = nil
+    @State private var pendingHandednessChange: Bool? = nil
 
     public var body: some View {
         NavigationStack {
@@ -1023,15 +1024,18 @@ public struct ViewSettingsSheet: View {
 
                 // HANDEDNESS & WORKSPACE LAYOUT
                 Section {
-                    Picker("Handedness", selection: $viewModel.isLeftHandedLayout) {
+                    Picker("Handedness", selection: Binding(
+                        get: { viewModel.isLeftHandedLayout },
+                        set: { newVal in
+                            if newVal != viewModel.isLeftHandedLayout {
+                                pendingHandednessChange = newVal
+                            }
+                        }
+                    )) {
                         Text("Right-Handed").tag(false)
                         Text("Left-Handed").tag(true)
                     }
                     .pickerStyle(.segmented)
-                    .onChange(of: viewModel.isLeftHandedLayout) { oldVal, newVal in
-                        viewModel.repositionCanvasItemsForHandednessChange(fromLeftHanded: oldVal, toLeftHanded: newVal)
-                        viewModel.persistAppearancePreferences()
-                    }
 
                     Picker("Workspace Mode", selection: Binding(
                         get: { viewModel.workspaceMode },
@@ -1110,7 +1114,120 @@ public struct ViewSettingsSheet: View {
             .sheet(item: $editingCustomPalette) { palette in
                 CustomThemeStudioSheet(viewModel: viewModel, initialPalette: palette)
             }
+            .alert("Switch Handedness?", isPresented: Binding(
+                get: { pendingHandednessChange != nil },
+                set: { if !$0 { pendingHandednessChange = nil } }
+            )) {
+                Button("Cancel", role: .cancel) { pendingHandednessChange = nil }
+                Button("Switch Anyway", role: .destructive) {
+                    if let target = pendingHandednessChange {
+                        viewModel.isLeftHandedLayout = target
+                        viewModel.persistAppearancePreferences()
+                    }
+                    pendingHandednessChange = nil
+                }
+            } message: {
+                Text("Switching handedness moves the Journal Margin and Top Menu to the opposite side. Any existing handwriting or margin notes will stay at their original positions and may not line up with the new side.")
+            }
         }
+    }
+}
+
+public struct HandednessOnboardingSheet: View {
+    @ObservedObject var viewModel: BibleWorkspaceViewModel
+    @State private var chooseLeftHanded: Bool = false
+
+    public var body: some View {
+        NavigationStack {
+            VStack(spacing: 22) {
+                VStack(spacing: 8) {
+                    Image(systemName: "pencil.and.outline")
+                        .font(.system(size: 42))
+                        .foregroundStyle(viewModel.theme.accentBlue)
+                    Text("Welcome to Sword & Quill")
+                        .font(.title.bold())
+                    Text("Choose how you write with Apple Pencil so we can set up your Study Desk and Journal Margin on your natural side from Day 1.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 16)
+                }
+                .padding(.top, 16)
+
+                HStack(spacing: 14) {
+                    choiceCard(
+                        title: "Right-Handed",
+                        subtitle: "Study Desk on Left\nJournal Margin on Right",
+                        icon: "hand.raised.fill",
+                        selected: !chooseLeftHanded
+                    ) {
+                        chooseLeftHanded = false
+                    }
+
+                    choiceCard(
+                        title: "Left-Handed",
+                        subtitle: "Journal Margin on Left\nStudy Desk on Right",
+                        icon: "hand.raised.fill",
+                        selected: chooseLeftHanded,
+                        flipIcon: true
+                    ) {
+                        chooseLeftHanded = true
+                    }
+                }
+                .padding(.horizontal, 20)
+
+                Text("You can change this later in Settings, though existing handwritten notes stay anchored to the side where they were written.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 28)
+
+                Spacer()
+
+                Button {
+                    viewModel.completeHandednessOnboarding(isLeftHanded: chooseLeftHanded)
+                } label: {
+                    Text("Start Studying")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(viewModel.theme.accentBlue)
+                .padding(.horizontal, 24)
+                .padding(.bottom, 20)
+            }
+            .interactiveDismissDisabled()
+        }
+    }
+
+    @ViewBuilder
+    private func choiceCard(title: String, subtitle: String, icon: String, selected: Bool, flipIcon: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 10) {
+                Image(systemName: icon)
+                    .font(.system(size: 28))
+                    .scaleEffect(x: flipIcon ? -1 : 1, y: 1)
+                    .foregroundStyle(selected ? viewModel.theme.accentBlue : .secondary)
+                Text(title)
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 20)
+            .padding(.horizontal, 12)
+            .background(selected ? viewModel.theme.accentBlue.opacity(0.12) : Color.secondary.opacity(0.08))
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(selected ? viewModel.theme.accentBlue : Color.clear, lineWidth: 2)
+            )
+        }
+        .buttonStyle(.plain)
     }
 }
 

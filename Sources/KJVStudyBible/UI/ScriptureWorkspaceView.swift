@@ -235,6 +235,9 @@ public struct ScriptureWorkspaceView: View {
         .sheet(isPresented: $viewModel.showLibraryManager) {
             LibraryManagerSheet(viewModel: viewModel, moduleManager: viewModel.moduleManager)
         }
+        .sheet(isPresented: $viewModel.showHandednessOnboarding) {
+            HandednessOnboardingSheet(viewModel: viewModel)
+        }
         .sheet(isPresented: $viewModel.showNewStudySheet) {
             NewStudySheet(viewModel: viewModel)
         }
