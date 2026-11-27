@@ -232,6 +232,9 @@ public struct ScriptureWorkspaceView: View {
         .sheet(isPresented: $viewModel.showSupportSheet) {
             SupportSwordAndQuillSheet(store: viewModel.storeManager, theme: viewModel.theme)
         }
+        .sheet(isPresented: $viewModel.showLibraryManager) {
+            LibraryManagerSheet(viewModel: viewModel, moduleManager: viewModel.moduleManager)
+        }
         .sheet(isPresented: $viewModel.showNewStudySheet) {
             NewStudySheet(viewModel: viewModel)
         }
@@ -862,6 +865,10 @@ public struct ScriptureWorkspaceView: View {
                         menuButton("Study Library (\(viewModel.studySessions.count))", icon: "books.vertical") {
                             viewModel.showMainMenu = false
                             viewModel.showStudyLibrarySheet = true
+                        }
+                        menuButton("Commentaries & Modules", icon: "square.stack.3d.up") {
+                            viewModel.showMainMenu = false
+                            viewModel.showLibraryManager = true
                         }
                         menuButton("Reading History", icon: "clock.arrow.circlepath") {
                             viewModel.showMainMenu = false

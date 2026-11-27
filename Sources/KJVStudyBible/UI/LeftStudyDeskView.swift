@@ -65,6 +65,13 @@ public struct VerseActionPopover: View {
                                 viewModel.openLeftStudy(tab: .dictionary, for: verse, dictionarySource: .nave)
                             }
                         }
+                        if viewModel.moduleManager.hasEnabledCommentaries {
+                            actionRow("Commentaries", icon: "text.quote", detail: "\(viewModel.moduleManager.enabledCommentaries.count)") {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    viewModel.openLeftStudy(tab: .commentary, for: verse)
+                                }
+                            }
+                        }
                         actionRow("Places & Map", icon: "map", detail: "\(viewModel.chapterPlaces.count)") {
                             withAnimation(.easeInOut(duration: 0.2)) {
                                 viewModel.openLeftStudy(tab: .places, for: verse)
@@ -288,7 +295,10 @@ public struct LeftStudyDeskView: View {
         VStack(spacing: 0) {
             // Header with Tab Bar + Close button
             HStack(spacing: 6) {
-                ForEach(LeftPanelTab.allCases) { tab in
+                let visibleTabs = LeftPanelTab.allCases.filter { tab in
+                    tab != .commentary || viewModel.moduleManager.hasEnabledCommentaries
+                }
+                ForEach(visibleTabs) { tab in
                     Button {
                         withAnimation(.easeInOut(duration: 0.15)) {
                             viewModel.leftPanelTab = tab
@@ -330,6 +340,8 @@ public struct LeftStudyDeskView: View {
                 strongsTabView
             case .dictionary:
                 websterTabView
+            case .commentary:
+                CommentaryDeskView(viewModel: viewModel, moduleManager: viewModel.moduleManager)
             case .places:
                 PlacesMapDeskView(viewModel: viewModel)
             case .parallel:

@@ -45,6 +45,10 @@ public final class BibleWorkspaceViewModel: ObservableObject {
     @Published public var isAudioBarVisible: Bool = false
     public let audioPlayer = BibleAudioPlayer()
     public let storeManager = StoreManager()
+    public let moduleManager = ModuleManager()
+    @Published public var showLibraryManager: Bool = false
+    @Published public var selectedCommentaryModuleId: String? = nil
+    @Published public var chapterCommentaryEntries: [CommentaryEntry] = []
     @Published public var backupExportURL: URL? = nil
     @Published public var activeShareSheetItem: ShareSheetItem? = nil
 
@@ -288,6 +292,7 @@ public final class BibleWorkspaceViewModel: ObservableObject {
         verses = referenceDB.verses(bookId: ref.bookId, chapter: ref.chapter)
         crossRefsByVerse = referenceDB.crossReferences(bookId: ref.bookId, chapter: ref.chapter)
         chapterPlaces = referenceDB.placesForChapter(bookId: ref.bookId, chapter: ref.chapter)
+        reloadChapterCommentary()
         expandedReferenceVerses = []
         chapterHighlights = studyDB.highlights(bookId: ref.bookId, chapter: ref.chapter)
         currentVerseFrames = [:]
@@ -1294,11 +1299,67 @@ public final class BibleWorkspaceViewModel: ObservableObject {
     }
 
     public func handleIncomingURL(_ url: URL) {
+        if url.pathExtension.lowercased() == "sqmod" {
+            moduleManager.importLocalSQMod(url: url)
+            syncCommentarySelection()
+            showToast(moduleManager.statusMessage ?? "Imported study module")
+            return
+        }
         if let pkg = StudyPackageCodec.decode(from: url) {
             incomingStudyPackage = pkg
         } else {
             showToast("Could not read Study Lesson file or link")
         }
+    }
+
+    // MARK: - Modular Library & Commentaries
+
+    public func selectCommentaryModule(_ moduleId: String) {
+        selectedCommentaryModuleId = moduleId
+        studyDB.setPreference("selected_commentary_id", value: moduleId)
+        reloadChapterCommentary()
+    }
+
+    public func syncCommentarySelection() {
+        let enabled = moduleManager.enabledCommentaries
+        if enabled.isEmpty {
+            selectedCommentaryModuleId = nil
+            chapterCommentaryEntries = []
+            if leftPanelTab == .commentary {
+                leftPanelTab = .crossRefs
+            }
+            return
+        }
+        if let cur = selectedCommentaryModuleId, enabled.contains(where: { $0.id == cur }) {
+            reloadChapterCommentary()
+        } else {
+            selectedCommentaryModuleId = enabled.first?.id
+            reloadChapterCommentary()
+        }
+    }
+
+    public func reloadChapterCommentary() {
+        let enabled = moduleManager.enabledCommentaries
+        guard !enabled.isEmpty else {
+            chapterCommentaryEntries = []
+            return
+        }
+        let targetId: String
+        if let cur = selectedCommentaryModuleId, enabled.contains(where: { $0.id == cur }) {
+            targetId = cur
+        } else if let saved = studyDB.getPreference("selected_commentary_id"),
+                  enabled.contains(where: { $0.id == saved }) {
+            targetId = saved
+            selectedCommentaryModuleId = saved
+        } else {
+            targetId = enabled[0].id
+            selectedCommentaryModuleId = targetId
+        }
+        chapterCommentaryEntries = moduleManager.commentaryEntries(
+            moduleId: targetId,
+            bookId: currentBookId,
+            chapter: currentChapter
+        )
     }
 
     public func importStudyPackage(_ package: StudySharePackage, includeMarginNotes: Bool) {

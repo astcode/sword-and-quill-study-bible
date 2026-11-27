@@ -642,6 +642,7 @@ public enum LeftPanelTab: String, CaseIterable, Identifiable, Sendable {
     case crossRefs = "TSK Cross-Refs"
     case strongs = "Interlinear"
     case dictionary = "Dictionaries"
+    case commentary = "Commentaries"
     case places = "Places"
     case parallel = "Parallel Bible"
 
@@ -652,6 +653,7 @@ public enum LeftPanelTab: String, CaseIterable, Identifiable, Sendable {
         case .crossRefs: return "arrow.triangle.branch"
         case .strongs: return "character.book.closed"
         case .dictionary: return "text.book.closed"
+        case .commentary: return "text.quote"
         case .places: return "map"
         case .parallel: return "book.pages"
         }

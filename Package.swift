@@ -26,6 +26,7 @@ let package = Package(
             resources: [
                 .copy("Resources/kjv_reference.mql"),
                 .copy("Resources/kjv_reference.mql.pages"),
+                .copy("Resources/StarterModules"),
             ],
             linkerSettings: [
                 .linkedLibrary("sqlite3"),
