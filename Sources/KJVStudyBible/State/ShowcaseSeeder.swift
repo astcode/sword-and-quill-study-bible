@@ -14,6 +14,8 @@ extension BibleWorkspaceViewModel {
         toastMessage = nil
 
         switch mode.lowercased() {
+        case "handedness_test":
+            runHandednessRoundTripTest()
         case "tour":
             runShowcaseTour()
         case "hero":
@@ -28,6 +30,22 @@ extension BibleWorkspaceViewModel {
             setupQRShowcase()
         default:
             setupHeroShowcase()
+        }
+    }
+
+    private func runHandednessRoundTripTest() {
+        isLeftHandedLayout = false
+        setupHeroShowcase()
+        Task { @MainActor in
+            // t=5s: flip Right -> Left
+            try? await Task.sleep(for: .seconds(5))
+            isLeftHandedLayout = true
+            repositionCanvasItemsForHandednessChange(fromLeftHanded: false, toLeftHanded: true)
+
+            // t=11s: flip Left -> Right
+            try? await Task.sleep(for: .seconds(6))
+            isLeftHandedLayout = false
+            repositionCanvasItemsForHandednessChange(fromLeftHanded: true, toLeftHanded: false)
         }
     }
 

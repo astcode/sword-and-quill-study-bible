@@ -707,41 +707,48 @@ public final class BibleWorkspaceViewModel: ObservableObject {
         let cWidth = currentCanvasWidth > sWidth ? Double(currentCanvasWidth) : (sWidth + 340.0)
         let jWidth = max(140.0, cWidth - sWidth - 1.0)
 
-        func mirrorPointX(_ x: Double) -> Double {
+        func mirrorItemX(_ posX: Double, itemWidth w: Double) -> Double {
+            let halfW = w * 0.5
+            let centerX = posX + halfW
             if !oldLeft && newLeft {
                 // Right-Handed -> Left-Handed
-                if x >= sWidth - 8.0 {
-                    let distFromGutter = max(0, x - (sWidth + 1.0))
-                    return min(max(18.0, jWidth - distFromGutter), max(22.0, jWidth - 18.0))
+                if centerX >= sWidth - 8.0 {
+                    let distFromGutter = max(0, centerX - (sWidth + 1.0))
+                    let targetCenter = jWidth - distFromGutter
+                    let clampedLeft = min(max(10.0, targetCenter - halfW), max(10.0, jWidth - w - 10.0))
+                    return clampedLeft
                 } else {
-                    return x + (jWidth + 1.0)
+                    return posX + (jWidth + 1.0)
                 }
             } else {
                 // Left-Handed -> Right-Handed
-                if x < jWidth + 8.0 {
-                    let distFromGutter = max(0, jWidth - x)
-                    return min(max(sWidth + 18.0, (sWidth + 1.0) + distFromGutter), max(sWidth + 22.0, cWidth - 18.0))
+                if centerX < jWidth + 8.0 {
+                    let distFromGutter = max(0, jWidth - centerX)
+                    let targetCenter = (sWidth + 1.0) + distFromGutter
+                    let clampedLeft = min(max(sWidth + 10.0, targetCenter - halfW), max(sWidth + 10.0, cWidth - w - 10.0))
+                    return clampedLeft
                 } else {
-                    return max(16.0, x - (jWidth + 1.0))
+                    return max(10.0, posX - (jWidth + 1.0))
                 }
             }
         }
 
-        // 1. Spine-mirror cards, chips, links, and stickers
+        // 1. Spine-mirror cards, chips, links, and stickers using their actual width (so .offset left-edge never overlaps Bible!)
         for idx in pinnedReferences.indices {
-            pinnedReferences[idx].posX = mirrorPointX(pinnedReferences[idx].posX)
+            pinnedReferences[idx].posX = mirrorItemX(pinnedReferences[idx].posX, itemWidth: 88.0)
             studyDB.upsertPinnedReference(pinnedReferences[idx], studyId: activeLayerStudyId)
         }
         for idx in journalClips.indices {
-            journalClips[idx].posX = mirrorPointX(journalClips[idx].posX)
+            journalClips[idx].posX = mirrorItemX(journalClips[idx].posX, itemWidth: 224.0)
             studyDB.upsertJournalClip(journalClips[idx], studyId: activeLayerStudyId)
         }
         for idx in chapterStudyLinks.indices {
-            chapterStudyLinks[idx].posX = mirrorPointX(chapterStudyLinks[idx].posX)
+            chapterStudyLinks[idx].posX = mirrorItemX(chapterStudyLinks[idx].posX, itemWidth: 214.0)
             studyDB.upsertStudyMarginLink(chapterStudyLinks[idx])
         }
         for idx in chapterStickers.indices {
-            chapterStickers[idx].posX = mirrorPointX(chapterStickers[idx].posX)
+            let stW = max(24.0, chapterStickers[idx].width)
+            chapterStickers[idx].posX = mirrorItemX(chapterStickers[idx].posX, itemWidth: stW)
             let st = chapterStickers[idx]
             studyDB.updatePlacedSticker(
                 id: st.id,
