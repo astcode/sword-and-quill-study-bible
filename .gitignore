@@ -1,0 +1,23 @@
+# SwiftPM / xtool build outputs
+.build/
+.bsp/
+.swiftpm/
+xtool/
+*.xcodeproj/
+*.xcworkspace/
+
+# Compiled reference SQLite database (~96 MiB — rebuild via tools/build_reference_db.py)
+Sources/KJVStudyBible/Resources/kjv_reference.sqlite
+
+# Local raw data archives & personal backups
+data-sources/
+*.sqlite-wal
+*.sqlite-shm
+SwordAndQuill-Backup-*.sqlite
+WellMarked-Backup-*.sqlite
+
+# OS & editor files
+.DS_Store
+Thumbs.db
+*.swp
+*~

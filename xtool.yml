@@ -1,0 +1,4 @@
+version: 1
+bundleID: com.aaron.KJVStudyBible
+iconPath: Assets/AppIcon.png
+infoPath: Info.plist
