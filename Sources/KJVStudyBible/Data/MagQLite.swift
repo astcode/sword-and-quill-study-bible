@@ -11,7 +11,7 @@ public struct MagQLiteError: Error, LocalizedError, CustomStringConvertible {
     public init(_ message: String) { self.message = message }
 }
 
-public struct MagQLiteConfig: Encodable {
+public struct MagQLiteConfig: Encodable, Sendable {
     public var durability: String?
     public var pagedStorage: Bool?
     public var bufferPoolPages: Int?

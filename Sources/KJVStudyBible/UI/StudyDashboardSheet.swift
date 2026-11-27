@@ -127,7 +127,7 @@ public struct StudyDashboardSheet: View {
                         Text("LIFELONG STUDY BACKUP & RESTORE")
                             .font(.caption.weight(.bold))
                             .foregroundStyle(.secondary)
-                        Text("Your Apple Pencil ink, highlights, Sermon Notebooks, stickers, clips, and bookmarks live in a single local SQLite file. Export anytime to Files, iCloud Drive, or AirDrop—or restore a previous backup below.")
+                        Text("Your Apple Pencil ink, highlights, Sermon Notebooks, stickers, clips, and bookmarks live in a single local MagQLite (.mql) file. Export anytime to Files, iCloud Drive, or AirDrop—or restore a previous .mql or legacy .sqlite backup below.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
 
@@ -149,7 +149,7 @@ public struct StudyDashboardSheet: View {
                                     feedbackIsError = true
                                 }
                             } label: {
-                                Label("Export Backup (.sqlite)", systemImage: "square.and.arrow.up")
+                                Label("Export Backup (.mql)", systemImage: "square.and.arrow.up")
                                     .font(.subheadline.weight(.semibold))
                                     .lineLimit(1)
                             }
