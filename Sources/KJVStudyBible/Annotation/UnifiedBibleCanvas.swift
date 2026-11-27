@@ -23,6 +23,7 @@ public final class PassthroughPKCanvasView: PKCanvasView {
     private func commonSetup() {
         backgroundColor = .clear
         isOpaque = false
+        clipsToBounds = true
         isScrollEnabled = false
         contentInsetAdjustmentBehavior = .never
         automaticallyAdjustsScrollIndicatorInsets = false
@@ -48,6 +49,9 @@ public final class PassthroughPKCanvasView: PKCanvasView {
 
     public override func layoutSubviews() {
         super.layoutSubviews()
+        // Never mutate UIScrollView geometry while Apple Pencil is actively stroking!
+        let strokeState = drawingGestureRecognizer.state
+        guard strokeState != .began && strokeState != .changed else { return }
         if contentSize != bounds.size { contentSize = bounds.size }
         if contentInset != .zero { contentInset = .zero }
         if contentOffset != .zero { contentOffset = .zero }

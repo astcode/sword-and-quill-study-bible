@@ -55,6 +55,7 @@ public struct ZoomableCanvasScrollView<Content: View>: UIViewRepresentable {
 
         let host = UIHostingController(rootView: content)
         host.safeAreaRegions = []
+        host.sizingOptions = []
         host.view.backgroundColor = .clear
         host.view.translatesAutoresizingMaskIntoConstraints = true
         scrollView.addSubview(host.view)

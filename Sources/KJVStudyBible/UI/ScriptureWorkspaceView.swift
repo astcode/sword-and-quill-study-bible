@@ -353,6 +353,7 @@ public struct ScriptureWorkspaceView: View {
                             UnifiedBibleCanvas(viewModel: viewModel) { tapPoint in
                                 handleFingerTapOnCanvas(tapPoint)
                             }
+                            .frame(width: unifiedWidth)
 
                             // Draggable Pinned Reference Chips — uses .offset() so hit-box is ONLY the tiny pill!
                             ForEach(viewModel.pinnedReferences) { pin in
