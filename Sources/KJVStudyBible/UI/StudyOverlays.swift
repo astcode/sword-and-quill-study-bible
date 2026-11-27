@@ -569,7 +569,13 @@ public struct SearchSheet: View {
                         Section("Your Personal Study (\(personalHits.count))") {
                             ForEach(personalHits) { hit in
                                 Button {
-                                    if let nid = hit.noteId, let note = viewModel.notes.first(where: { $0.id == nid }) {
+                                    if let sid = hit.studyId, let study = viewModel.studySessions.first(where: { $0.id == sid }) {
+                                        dismiss()
+                                        viewModel.activateStudy(study)
+                                        if let b = hit.bookId, let c = hit.chapter {
+                                            viewModel.navigate(to: VerseRef(bookId: b, chapter: c, verse: hit.verse))
+                                        }
+                                    } else if let nid = hit.noteId, let note = viewModel.notes.first(where: { $0.id == nid }) {
                                         dismiss()
                                         viewModel.openExistingNotebook(note)
                                     } else if let b = hit.bookId, let c = hit.chapter {

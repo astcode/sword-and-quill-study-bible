@@ -293,13 +293,36 @@ public struct ReadingHistoryItem: Identifiable, Hashable, Sendable {
 
 public struct PersonalSearchHit: Identifiable, Hashable, Sendable {
     public let id: String
-    public let kind: String // "Note", "Clip", "Bookmark"
+    public let kind: String // "Note", "Clip", "Bookmark", "Study", "Study Trail"
     public let title: String
     public let snippet: String
     public let bookId: Int?
     public let chapter: Int?
     public let verse: Int?
     public let noteId: String?
+    public let studyId: String?
+
+    public init(
+        id: String,
+        kind: String,
+        title: String,
+        snippet: String,
+        bookId: Int?,
+        chapter: Int?,
+        verse: Int?,
+        noteId: String?,
+        studyId: String? = nil
+    ) {
+        self.id = id
+        self.kind = kind
+        self.title = title
+        self.snippet = snippet
+        self.bookId = bookId
+        self.chapter = chapter
+        self.verse = verse
+        self.noteId = noteId
+        self.studyId = studyId
+    }
 }
 
 // MARK: - Notability-Style Stickers

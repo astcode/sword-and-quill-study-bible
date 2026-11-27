@@ -238,6 +238,9 @@ public struct ScriptureWorkspaceView: View {
         .sheet(isPresented: $viewModel.showStudyTrailSheet) {
             StudyTrailSheet(viewModel: viewModel)
         }
+        .sheet(isPresented: $viewModel.showStudyLibrarySheet) {
+            StudyLibrarySheet(viewModel: viewModel)
+        }
         .sheet(isPresented: $viewModel.showAddStudyLinkSheet) {
             StudyMarginLinkEditorSheet(viewModel: viewModel, existingLink: nil)
         }
@@ -855,6 +858,10 @@ public struct ScriptureWorkspaceView: View {
                         menuButton("Personal Notes & Sermons", icon: "note.text") {
                             viewModel.showMainMenu = false
                             viewModel.showNotesSheet = true
+                        }
+                        menuButton("Study Library (\(viewModel.studySessions.count))", icon: "books.vertical") {
+                            viewModel.showMainMenu = false
+                            viewModel.showStudyLibrarySheet = true
                         }
                         menuButton("Reading History", icon: "clock.arrow.circlepath") {
                             viewModel.showMainMenu = false

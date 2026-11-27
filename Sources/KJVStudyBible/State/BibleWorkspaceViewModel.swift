@@ -55,6 +55,10 @@ public final class BibleWorkspaceViewModel: ObservableObject {
     @Published public var chapterStudyLinks: [StudyMarginLink] = []
     @Published public var showNewStudySheet: Bool = false
     @Published public var showStudyTrailSheet: Bool = false
+    @Published public var showStudyLibrarySheet: Bool = false
+    @Published public var pinnedStudyIds: Set<String> = []
+    @Published public var archivedStudyIds: Set<String> = []
+    @Published public var starredTrailEntryIds: Set<String> = []
     @Published public var editingStudyMarginLink: StudyMarginLink? = nil
     @Published public var showAddStudyLinkSheet: Bool = false
     @Published public var sharingStudy: StudySession? = nil
@@ -1439,7 +1443,67 @@ public final class BibleWorkspaceViewModel: ObservableObject {
         if let pb = studyDB.getPreference("parallel_book_id").flatMap(Int.init) { parallelBookId = pb }
         if let pc = studyDB.getPreference("parallel_chapter").flatMap(Int.init) { parallelChapter = pc }
         if let ta = studyDB.getPreference("teacher_author_name") { teacherAuthorName = ta }
+        if let raw = studyDB.getPreference("pinned_study_ids"), let d = raw.data(using: .utf8), let arr = try? JSONDecoder().decode([String].self, from: d) {
+            pinnedStudyIds = Set(arr)
+        }
+        if let raw = studyDB.getPreference("archived_study_ids"), let d = raw.data(using: .utf8), let arr = try? JSONDecoder().decode([String].self, from: d) {
+            archivedStudyIds = Set(arr)
+        }
+        if let raw = studyDB.getPreference("starred_trail_entry_ids"), let d = raw.data(using: .utf8), let arr = try? JSONDecoder().decode([String].self, from: d) {
+            starredTrailEntryIds = Set(arr)
+        }
         syncModeFromPanels()
+    }
+
+    public var quickMenuStudies: [StudySession] {
+        let nonArchived = studySessions.filter { !archivedStudyIds.contains($0.id) }
+        let pinned = nonArchived.filter { pinnedStudyIds.contains($0.id) }
+        let unpinned = nonArchived.filter { !pinnedStudyIds.contains($0.id) }
+        return Array((pinned + unpinned).prefix(6))
+    }
+
+    public func togglePinStudy(_ studyId: String) {
+        if pinnedStudyIds.contains(studyId) {
+            pinnedStudyIds.remove(studyId)
+        } else {
+            pinnedStudyIds.insert(studyId)
+            archivedStudyIds.remove(studyId)
+        }
+        persistStudyOrganization()
+    }
+
+    public func toggleArchiveStudy(_ studyId: String) {
+        if archivedStudyIds.contains(studyId) {
+            archivedStudyIds.remove(studyId)
+        } else {
+            archivedStudyIds.insert(studyId)
+            pinnedStudyIds.remove(studyId)
+            if activeStudy?.id == studyId {
+                exitActiveStudy()
+            }
+        }
+        persistStudyOrganization()
+    }
+
+    public func toggleStarTrailEntry(_ entryId: String) {
+        if starredTrailEntryIds.contains(entryId) {
+            starredTrailEntryIds.remove(entryId)
+        } else {
+            starredTrailEntryIds.insert(entryId)
+        }
+        persistStudyOrganization()
+    }
+
+    private func persistStudyOrganization() {
+        if let d = try? JSONEncoder().encode(Array(pinnedStudyIds)), let s = String(data: d, encoding: .utf8) {
+            studyDB.setPreference("pinned_study_ids", value: s)
+        }
+        if let d = try? JSONEncoder().encode(Array(archivedStudyIds)), let s = String(data: d, encoding: .utf8) {
+            studyDB.setPreference("archived_study_ids", value: s)
+        }
+        if let d = try? JSONEncoder().encode(Array(starredTrailEntryIds)), let s = String(data: d, encoding: .utf8) {
+            studyDB.setPreference("starred_trail_entry_ids", value: s)
+        }
     }
 
     public func showToast(_ msg: String) {

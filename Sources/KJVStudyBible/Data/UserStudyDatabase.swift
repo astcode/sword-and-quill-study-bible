@@ -1259,7 +1259,94 @@ public final class UserStudyDatabase: @unchecked Sendable {
                 ))
             }
         }
+
+        // Named Study Sessions
+        if let res = try? db.queryParams(
+            "SELECT id, name, summary_note, start_book_id, start_chapter, start_verse FROM study_sessions WHERE LOWER(name) LIKE ? OR LOWER(summary_note) LIKE ? ORDER BY updated_at DESC LIMIT \(safeLimit);",
+            params: [.string(pat), .string(pat)]
+        ) {
+            for row in res.rows {
+                let sid = row.string(at: 0) ?? ""
+                hits.append(PersonalSearchHit(
+                    id: "study-\(sid)",
+                    kind: "Study",
+                    title: row.string(at: 1) ?? "",
+                    snippet: row.string(at: 2) ?? "",
+                    bookId: Int(row.int(at: 3) ?? 1),
+                    chapter: Int(row.int(at: 4) ?? 1),
+                    verse: row.isNull(at: 5) ? nil : row.int(at: 5).map(Int.init),
+                    noteId: nil,
+                    studyId: sid
+                ))
+            }
+        }
+
+        // Study Trail Entries
+        if let res = try? db.queryParams(
+            "SELECT e.id, e.study_id, COALESCE(s.name, 'Study'), e.title, e.detail, e.book_id, e.chapter, e.verse FROM study_trail_entries e LEFT JOIN study_sessions s ON s.id = e.study_id WHERE LOWER(e.title) LIKE ? OR LOWER(e.detail) LIKE ? ORDER BY e.created_at DESC LIMIT \(safeLimit);",
+            params: [.string(pat), .string(pat)]
+        ) {
+            for row in res.rows {
+                let eid = row.string(at: 0) ?? ""
+                let sid = row.string(at: 1) ?? ""
+                let sName = row.string(at: 2) ?? "Study"
+                let det = row.string(at: 4) ?? ""
+                hits.append(PersonalSearchHit(
+                    id: "trail-\(eid)",
+                    kind: "Study: \(sName)",
+                    title: row.string(at: 3) ?? "",
+                    snippet: det,
+                    bookId: row.isNull(at: 5) ? nil : row.int(at: 5).map(Int.init),
+                    chapter: row.isNull(at: 6) ? nil : row.int(at: 6).map(Int.init),
+                    verse: row.isNull(at: 7) ? nil : row.int(at: 7).map(Int.init),
+                    noteId: nil,
+                    studyId: sid
+                ))
+            }
+        }
         return hits
+    }
+
+    public func studyTrailCounts() -> [String: Int] {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let db,
+              let res = try? db.query("SELECT study_id FROM study_trail_entries;") else { return [:] }
+        var counts: [String: Int] = [:]
+        for row in res.rows {
+            if let sid = row.string(at: 0), !sid.isEmpty {
+                counts[sid, default: 0] += 1
+            }
+        }
+        return counts
+    }
+
+    public func studyMarginLinkCounts() -> [String: Int] {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let db,
+              let res = try? db.query("SELECT study_id FROM study_margin_links;") else { return [:] }
+        var counts: [String: Int] = [:]
+        for row in res.rows {
+            if let sid = row.string(at: 0), !sid.isEmpty {
+                counts[sid, default: 0] += 1
+            }
+        }
+        return counts
+    }
+
+    public func studyIdsMatchingTrail(query raw: String) -> Set<String> {
+        let q = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return [] }
+        let pat = "%\(q.lowercased())%"
+        lock.lock()
+        defer { lock.unlock() }
+        guard let db,
+              let res = try? db.queryParams(
+                  "SELECT DISTINCT study_id FROM study_trail_entries WHERE LOWER(title) LIKE ? OR LOWER(detail) LIKE ?;",
+                  params: [.string(pat), .string(pat)]
+              ) else { return [] }
+        return Set(res.rows.compactMap { $0.string(at: 0) })
     }
 
     // MARK: - Named Study Sessions ("Study Trails") & Permanent Bible Ink Links

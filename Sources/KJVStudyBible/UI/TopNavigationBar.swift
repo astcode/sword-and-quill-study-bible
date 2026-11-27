@@ -203,6 +203,12 @@ public struct TopNavigationBar: View {
                     }
 
                     Button {
+                        viewModel.showStudyLibrarySheet = true
+                    } label: {
+                        Label("Study Library (\(viewModel.studySessions.count))...", systemImage: "books.vertical")
+                    }
+
+                    Button {
                         viewModel.showImportStudyFilePicker = true
                     } label: {
                         Label("Import Study (.sqstudy)...", systemImage: "tray.and.arrow.down")
@@ -234,10 +240,10 @@ public struct TopNavigationBar: View {
                         }
                     }
 
-                    if !viewModel.studySessions.isEmpty {
+                    if !viewModel.quickMenuStudies.isEmpty {
                         Divider()
-                        Section("Saved Studies") {
-                            ForEach(viewModel.studySessions) { study in
+                        Section("Pinned & Recent Studies") {
+                            ForEach(viewModel.quickMenuStudies) { study in
                                 Button {
                                     if viewModel.activeStudy?.id == study.id {
                                         viewModel.showStudyTrailSheet = true
@@ -247,9 +253,18 @@ public struct TopNavigationBar: View {
                                 } label: {
                                     if viewModel.activeStudy?.id == study.id {
                                         Label("\(study.name) (Active)", systemImage: "checkmark.circle.fill")
+                                    } else if viewModel.pinnedStudyIds.contains(study.id) {
+                                        Label(study.name, systemImage: "star.fill")
                                     } else {
                                         Label(study.name, systemImage: "book.pages")
                                     }
+                                }
+                            }
+                            if viewModel.studySessions.count > viewModel.quickMenuStudies.count {
+                                Button {
+                                    viewModel.showStudyLibrarySheet = true
+                                } label: {
+                                    Label("Browse All \(viewModel.studySessions.count) Studies...", systemImage: "magnifyingglass")
                                 }
                             }
                         }

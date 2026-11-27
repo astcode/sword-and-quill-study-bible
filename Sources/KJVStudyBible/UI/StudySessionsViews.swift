@@ -94,6 +94,7 @@ public struct StudyTrailSheet: View {
 
     enum TrailFilter: String, CaseIterable, Identifiable {
         case all = "All"
+        case key = "★ Key"
         case passages = "Passages"
         case refs = "Refs"
         case words = "Words"
@@ -101,19 +102,48 @@ public struct StudyTrailSheet: View {
         var id: String { rawValue }
     }
 
+    enum TrailGroupMode: String, CaseIterable, Identifiable {
+        case timeline = "Timeline"
+        case byBook = "By Book"
+        var id: String { rawValue }
+    }
+
     @State private var filter: TrailFilter = .all
+    @State private var groupMode: TrailGroupMode = .timeline
+    @State private var searchQuery: String = ""
     @State private var editName: String = ""
     @State private var editSummary: String = ""
     @State private var showRenameArea: Bool = false
     @State private var showDeleteConfirm: Bool = false
 
     private var filteredEntries: [StudyTrailEntry] {
+        let byKind: [StudyTrailEntry]
         switch filter {
-        case .all: return viewModel.activeStudyTrail
-        case .passages: return viewModel.activeStudyTrail.filter { $0.kind == .passage }
-        case .refs: return viewModel.activeStudyTrail.filter { $0.kind == .crossRef }
-        case .words: return viewModel.activeStudyTrail.filter { $0.kind == .strongs || $0.kind == .dictionary || $0.kind == .place }
-        case .notes: return viewModel.activeStudyTrail.filter { $0.kind == .note || $0.kind == .clip || $0.kind == .highlight }
+        case .all: byKind = viewModel.activeStudyTrail
+        case .key: byKind = viewModel.activeStudyTrail.filter { viewModel.starredTrailEntryIds.contains($0.id) }
+        case .passages: byKind = viewModel.activeStudyTrail.filter { $0.kind == .passage }
+        case .refs: byKind = viewModel.activeStudyTrail.filter { $0.kind == .crossRef }
+        case .words: byKind = viewModel.activeStudyTrail.filter { $0.kind == .strongs || $0.kind == .dictionary || $0.kind == .place }
+        case .notes: byKind = viewModel.activeStudyTrail.filter { $0.kind == .note || $0.kind == .clip || $0.kind == .highlight }
+        }
+        let q = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !q.isEmpty else { return byKind }
+        return byKind.filter { entry in
+            entry.title.lowercased().contains(q)
+            || entry.detail.lowercased().contains(q)
+            || entry.kind.rawValue.lowercased().contains(q)
+        }
+    }
+
+    private var groupedByBook: [(bookId: Int, label: String, entries: [StudyTrailEntry])] {
+        let grouped = Dictionary(grouping: filteredEntries) { $0.bookId ?? 0 }
+        return grouped.map { (bid, items) in
+            let label = bid > 0 ? viewModel.bookName(bid) : "Word Studies & General"
+            return (bookId: bid, label: label, entries: items)
+        }.sorted { a, b in
+            if a.bookId == 0 { return false }
+            if b.bookId == 0 { return true }
+            return a.bookId < b.bookId
         }
     }
 
@@ -226,12 +256,45 @@ public struct StudyTrailSheet: View {
                     .padding(14)
                     .background(viewModel.theme.chromeBackground)
 
-                    Picker("Filter", selection: $filter) {
-                        ForEach(TrailFilter.allCases) { f in
-                            Text(f.rawValue).tag(f)
+                    // Instant Trail Search + Timeline / By Book Toggle
+                    VStack(spacing: 8) {
+                        HStack(spacing: 8) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "magnifyingglass")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                TextField("Search inside this study...", text: $searchQuery)
+                                    .font(.subheadline)
+                                    .textFieldStyle(.plain)
+                                if !searchQuery.isEmpty {
+                                    Button { searchQuery = "" } label: {
+                                        Image(systemName: "xmark.circle.fill")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 7)
+                            .background(Color.secondary.opacity(0.10))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                            Picker("Group", selection: $groupMode) {
+                                ForEach(TrailGroupMode.allCases) { m in
+                                    Text(m.rawValue).tag(m)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .frame(width: 158)
                         }
+
+                        Picker("Filter", selection: $filter) {
+                            ForEach(TrailFilter.allCases) { f in
+                                Text(f.rawValue).tag(f)
+                            }
+                        }
+                        .pickerStyle(.segmented)
                     }
-                    .pickerStyle(.segmented)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
 
@@ -239,59 +302,24 @@ public struct StudyTrailSheet: View {
 
                     List {
                         if filteredEntries.isEmpty {
-                            Text("No items in this filter yet. Jump around Scripture, tap cross-refs, Strong's words, or places—everything is logged automatically!")
+                            Text(searchQuery.isEmpty
+                                 ? (filter == .key
+                                    ? "Tap the ☆ star on any trail item to mark key teaching points and findings."
+                                    : "No items in this filter yet. Jump around Scripture, tap cross-refs, Strong's words, or places—everything is logged automatically!")
+                                 : "No trail items matched \"\(searchQuery)\".")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                        }
-                        ForEach(filteredEntries) { entry in
-                            Button {
-                                jumpToTrailEntry(entry)
-                            } label: {
-                                HStack(alignment: .top, spacing: 10) {
-                                    Image(systemName: entry.kind.systemImage)
-                                        .font(.subheadline)
-                                        .foregroundStyle(viewModel.theme.accentBlue)
-                                        .frame(width: 24, height: 24)
-                                        .background(viewModel.theme.accentBlue.opacity(0.12))
-                                        .clipShape(Circle())
-
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        HStack(spacing: 6) {
-                                            Text(entry.title)
-                                                .font(.subheadline.weight(.semibold))
-                                                .foregroundStyle(viewModel.theme.primaryText)
-                                            Text(entry.kind.rawValue)
-                                                .font(.system(size: 9.5, weight: .semibold))
-                                                .padding(.horizontal, 6)
-                                                .padding(.vertical, 1)
-                                                .background(viewModel.theme.accentBlue.opacity(0.10))
-                                                .foregroundStyle(viewModel.theme.accentBlue)
-                                                .clipShape(Capsule())
-                                        }
-                                        if !entry.detail.isEmpty {
-                                            Text(entry.detail)
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                                .lineLimit(2)
-                                        }
-                                    }
-
-                                    Spacer()
-
-                                    if !entry.formattedDuration.isEmpty {
-                                        Text(entry.formattedDuration)
-                                            .font(.caption2.monospacedDigit())
-                                            .foregroundStyle(.secondary)
+                        } else if groupMode == .byBook {
+                            ForEach(groupedByBook, id: \.bookId) { group in
+                                Section("\(group.label) (\(group.entries.count))") {
+                                    ForEach(group.entries) { entry in
+                                        trailEntryRow(entry)
                                     }
                                 }
-                                .padding(.vertical, 2)
                             }
-                            .swipeActions(edge: .trailing) {
-                                Button(role: .destructive) {
-                                    viewModel.deleteStudyTrailEntry(entry)
-                                } label: {
-                                    Label("Remove", systemImage: "trash")
-                                }
+                        } else {
+                            ForEach(filteredEntries) { entry in
+                                trailEntryRow(entry)
                             }
                         }
                     }
@@ -300,6 +328,23 @@ public struct StudyTrailSheet: View {
                 .navigationTitle("Study Trail")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
+                    ToolbarItem(placement: .navigationBarLeading) {
+                        HStack(spacing: 10) {
+                            Button {
+                                viewModel.togglePinStudy(study.id)
+                            } label: {
+                                Image(systemName: viewModel.pinnedStudyIds.contains(study.id) ? "star.fill" : "star")
+                                    .foregroundStyle(viewModel.pinnedStudyIds.contains(study.id) ? .orange : .secondary)
+                            }
+                            Button {
+                                dismiss()
+                                viewModel.showStudyLibrarySheet = true
+                            } label: {
+                                Text("Library")
+                                    .font(.subheadline)
+                            }
+                        }
+                    }
                     ToolbarItem(placement: .confirmationAction) {
                         Button("Done") { dismiss() }
                     }
@@ -324,6 +369,73 @@ public struct StudyTrailSheet: View {
                         .foregroundStyle(.secondary)
                     Button("Close") { dismiss() }
                 }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func trailEntryRow(_ entry: StudyTrailEntry) -> some View {
+        let isStarred = viewModel.starredTrailEntryIds.contains(entry.id)
+        HStack(alignment: .top, spacing: 10) {
+            Button {
+                jumpToTrailEntry(entry)
+            } label: {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: entry.kind.systemImage)
+                        .font(.subheadline)
+                        .foregroundStyle(viewModel.theme.accentBlue)
+                        .frame(width: 24, height: 24)
+                        .background(viewModel.theme.accentBlue.opacity(0.12))
+                        .clipShape(Circle())
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text(entry.title)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(viewModel.theme.primaryText)
+                            Text(entry.kind.rawValue)
+                                .font(.system(size: 9.5, weight: .semibold))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 1)
+                                .background(viewModel.theme.accentBlue.opacity(0.10))
+                                .foregroundStyle(viewModel.theme.accentBlue)
+                                .clipShape(Capsule())
+                        }
+                        if !entry.detail.isEmpty {
+                            Text(entry.detail)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                        }
+                    }
+
+                    Spacer()
+
+                    if !entry.formattedDuration.isEmpty {
+                        Text(entry.formattedDuration)
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                viewModel.toggleStarTrailEntry(entry.id)
+            } label: {
+                Image(systemName: isStarred ? "star.fill" : "star")
+                    .font(.subheadline)
+                    .foregroundStyle(isStarred ? .orange : .secondary.opacity(0.55))
+                    .padding(.top, 2)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.vertical, 2)
+        .swipeActions(edge: .trailing) {
+            Button(role: .destructive) {
+                viewModel.deleteStudyTrailEntry(entry)
+            } label: {
+                Label("Remove", systemImage: "trash")
             }
         }
     }
