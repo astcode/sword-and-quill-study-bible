@@ -110,7 +110,21 @@ public struct BottomUtilityBar: View {
                 .accessibilityLabel("Stickers")
             }
 
-            Spacer(minLength: isCompact ? 6 : 20)
+            Spacer(minLength: isCompact ? 6 : 16)
+
+            toolbarItem(
+                title: "Read Aloud",
+                icon: viewModel.isAudioBarVisible ? "speaker.wave.2.fill" : "speaker.wave.2",
+                active: viewModel.isAudioBarVisible
+            ) {
+                if viewModel.isAudioBarVisible {
+                    viewModel.stopChapterAudio()
+                } else {
+                    viewModel.startChapterAudio()
+                }
+            }
+
+            Spacer(minLength: isCompact ? 6 : 16)
 
             toolbarItem(title: "View", icon: "slider.horizontal.3", active: viewModel.showViewSettings) {
                 viewModel.showViewSettings = true

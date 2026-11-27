@@ -151,6 +151,7 @@ public final class KokoroVoiceManager: ObservableObject {
     @Published public private(set) var errorMessage: String? = nil
 
     public let voicesRootDir: URL
+    public var onPackChanged: (() -> Void)? = nil
     private var downloadTask: Task<Void, Never>? = nil
 
     public var isDownloading: Bool { downloadingPack != nil }
@@ -245,6 +246,7 @@ public final class KokoroVoiceManager: ObservableObject {
         if downloadingPack == pack { cancelDownload() }
         try? FileManager.default.removeItem(at: packDir(for: pack))
         refreshInstallState()
+        onPackChanged?()
         statusText = "\(pack.shortName) removed."
     }
 
@@ -255,8 +257,12 @@ public final class KokoroVoiceManager: ObservableObject {
         let packBaseURL = Self.voicesBaseURL.appendingPathComponent(pack.rawValue, isDirectory: true)
 
         do {
-            let manifestURL = packBaseURL.appendingPathComponent("manifest.json")
-            let (manifestData, manifestResp) = try await URLSession.shared.data(from: manifestURL)
+            var mComps = URLComponents(url: packBaseURL.appendingPathComponent("manifest.json"), resolvingAgainstBaseURL: false)
+            mComps?.queryItems = [URLQueryItem(name: "t", value: "\(Int(Date().timeIntervalSince1970))")]
+            let manifestURL = mComps?.url ?? packBaseURL.appendingPathComponent("manifest.json")
+            var manifestReq = URLRequest(url: manifestURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
+            manifestReq.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+            let (manifestData, manifestResp) = try await URLSession.shared.data(for: manifestReq)
             if let http = manifestResp as? HTTPURLResponse, http.statusCode != 200 {
                 throw NSError(domain: "NeuralVoice", code: http.statusCode, userInfo: [
                     NSLocalizedDescriptionKey: "Voice pack server returned HTTP \(http.statusCode)."
@@ -274,8 +280,11 @@ public final class KokoroVoiceManager: ObservableObject {
                 try Task.checkCancellation()
                 statusText = "Downloading \(pack.shortName) (\(index + 1)/\(manifest.files.count))…"
 
-                let fileURL = packBaseURL.appendingPathComponent(entry.file)
-                let (tempURL, resp) = try await URLSession.shared.download(from: fileURL)
+                var comps = URLComponents(url: packBaseURL.appendingPathComponent(entry.file), resolvingAgainstBaseURL: false)
+                comps?.queryItems = [URLQueryItem(name: "v", value: "\(manifest.version)")]
+                let fileURL = comps?.url ?? packBaseURL.appendingPathComponent(entry.file)
+                let fileReq = URLRequest(url: fileURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 120)
+                let (tempURL, resp) = try await URLSession.shared.download(for: fileReq)
                 if let http = resp as? HTTPURLResponse, http.statusCode != 200 {
                     throw NSError(domain: "NeuralVoice", code: http.statusCode, userInfo: [
                         NSLocalizedDescriptionKey: "Failed to download \(entry.file) (HTTP \(http.statusCode))."
@@ -313,6 +322,7 @@ public final class KokoroVoiceManager: ObservableObject {
             downloadProgress = 1.0
             downloadingPack = nil
             refreshInstallState()
+            onPackChanged?()
             statusText = isInstalled(pack) ? "\(pack.shortName) installed (100% offline)." : nil
         } catch is CancellationError {
             try? fm.removeItem(at: stagingDir)

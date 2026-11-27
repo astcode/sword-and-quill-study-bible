@@ -68,6 +68,10 @@ public final class BibleAudioPlayer: NSObject, ObservableObject {
     public override init() {
         super.init()
         synthesizer.delegate = self
+        kokoroManager.onPackChanged = { [weak self] in
+            self?.clearPrefetch()
+            self?.kokoroEngine.unload()
+        }
         if let active = resolvedNeuralSelection() {
             let spec = kokoroManager.engineSpec(for: active.pack)
             Task.detached(priority: .utility) { [kokoroEngine] in
