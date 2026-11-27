@@ -947,23 +947,92 @@ public struct ViewSettingsSheet: View {
     @ObservedObject var viewModel: BibleWorkspaceViewModel
     @Environment(\.dismiss) private var dismiss
 
+    @State private var editingCustomPalette: CustomThemePalette? = nil
+
     public var body: some View {
         NavigationStack {
             Form {
-                Section("Reading Theme & Scripture Text") {
-                    Picker("Theme", selection: $viewModel.theme) {
-                        ForEach(ReadingTheme.allCases) { t in
-                            Text(t.rawValue).tag(t)
+                // THEMES & CUSTOM THEME STUDIO
+                Section {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 94), spacing: 10)], spacing: 10) {
+                        ForEach(viewModel.allAvailableThemes) { t in
+                            let selected = (viewModel.theme.id == t.id)
+                            Button {
+                                viewModel.theme = t
+                                viewModel.persistAppearancePreferences()
+                            } label: {
+                                VStack(spacing: 6) {
+                                    ZStack {
+                                        RoundedRectangle(cornerRadius: 10)
+                                            .fill(t.canvasBackground)
+                                            .frame(height: 44)
+                                            .overlay(
+                                                HStack(spacing: 5) {
+                                                    Text("Aa")
+                                                        .font(.system(size: 16, weight: .semibold, design: .serif))
+                                                        .foregroundStyle(t.primaryText)
+                                                    Circle()
+                                                        .fill(t.accentBlue)
+                                                        .frame(width: 9, height: 9)
+                                                    Circle()
+                                                        .fill(t.redLetterColor)
+                                                        .frame(width: 9, height: 9)
+                                                }
+                                            )
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: 10)
+                                                    .stroke(selected ? t.accentBlue : t.dividerColor, lineWidth: selected ? 2.5 : 1)
+                                            )
+                                    }
+                                    Text(t.rawValue)
+                                        .font(.caption2.weight(selected ? .bold : .medium))
+                                        .foregroundStyle(selected ? viewModel.theme.accentBlue : .primary)
+                                        .lineLimit(1)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .contextMenu {
+                                if t.isCustom,
+                                   let cid = t.id.split(separator: ":").last.map(String.init),
+                                   let pal = viewModel.customThemes.first(where: { $0.id == cid }) {
+                                    Button("Edit Custom Theme") { editingCustomPalette = pal }
+                                    Button("Delete Theme", role: .destructive) { viewModel.deleteCustomTheme(pal) }
+                                }
+                            }
                         }
                     }
-                    .pickerStyle(.segmented)
-                    Toggle("Red-Letter Words of Christ", isOn: $viewModel.showRedLetter)
-                    Toggle("Translator-Supplied Italics", isOn: $viewModel.showItalics)
-                    Toggle("Show Verse Numbers", isOn: $viewModel.showVerseNumbers)
+                    .padding(.vertical, 4)
+
+                    Button {
+                        editingCustomPalette = CustomThemePalette(
+                            name: "My Study Theme",
+                            canvasHex: viewModel.theme.canvasHex,
+                            textHex: viewModel.theme.primaryTextHex,
+                            accentHex: viewModel.theme.accentHex,
+                            redLetterHex: viewModel.theme.redLetterHex
+                        )
+                    } label: {
+                        Label("Create Custom Theme…", systemImage: "paintpalette")
+                            .font(.subheadline.weight(.medium))
+                    }
+                } header: {
+                    Text("Reading Themes")
+                } footer: {
+                    Text("Long-press any custom theme to edit or delete it. You can also export Theme JSON from the Theme Studio.")
                 }
 
-                Section("Workspace Mode & Panels") {
-                    Picker("Mode", selection: Binding(
+                // HANDEDNESS & WORKSPACE LAYOUT
+                Section {
+                    Picker("Handedness", selection: $viewModel.isLeftHandedLayout) {
+                        Text("Right-Handed").tag(false)
+                        Text("Left-Handed").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: viewModel.isLeftHandedLayout) { _, _ in
+                        viewModel.persistAppearancePreferences()
+                    }
+
+                    Picker("Workspace Mode", selection: Binding(
                         get: { viewModel.workspaceMode },
                         set: { viewModel.applyMode($0) }
                     )) {
@@ -971,15 +1040,51 @@ public struct ViewSettingsSheet: View {
                             Text(m.rawValue).tag(m)
                         }
                     }
-                    Toggle("Show Reference Panel (Left)", isOn: Binding(
+
+                    Toggle(viewModel.isLeftHandedLayout ? "Show Study Desk (Right)" : "Show Study Desk (Left)", isOn: Binding(
                         get: { viewModel.showReferencePanel },
                         set: { _ in viewModel.toggleReferencePanel() }
                     ))
-                    Toggle("Show Journal Margin (Right)", isOn: Binding(
+                    Toggle(viewModel.isLeftHandedLayout ? "Show Journal Margin (Left)" : "Show Journal Margin (Right)", isOn: Binding(
                         get: { viewModel.showJournalPanel },
                         set: { _ in viewModel.toggleJournalPanel() }
                     ))
                     Toggle("Show Overlapping Ink in Reading Mode", isOn: $viewModel.showInkInReadingMode)
+                } header: {
+                    Text("Handedness & Workspace")
+                } footer: {
+                    Text("Left-Handed Mode places the Apple Pencil Journal Margin on the left and docks the Study Desk on the right.")
+                }
+
+                // TYPOGRAPHY (BIBLE + STUDY DESK)
+                Section("Typography & Readability") {
+                    Picker("Scripture Font", selection: $viewModel.scriptureFontDesign) {
+                        ForEach(ScriptureFontDesign.allCases) { d in
+                            Text(d.rawValue).tag(d)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    VStack(alignment: .leading) {
+                        Text("Scripture Size: \(Int(viewModel.fontSize)) pt")
+                        Slider(value: $viewModel.fontSize, in: 14...28, step: 1)
+                    }
+                    VStack(alignment: .leading) {
+                        Text("Scripture Line Spacing: \(Int(viewModel.lineSpacing)) pt")
+                        Slider(value: $viewModel.lineSpacing, in: 4...16, step: 1)
+                    }
+                    VStack(alignment: .leading) {
+                        Text("Study Desk, Refs & Commentaries Size: \(Int(viewModel.studyDeskFontSize)) pt")
+                        Slider(value: $viewModel.studyDeskFontSize, in: 11...22, step: 1)
+                    }
+                }
+
+                // SCRIPTURE DISPLAY & PULPIT COMFORTS
+                Section("Scripture & Reading Comforts") {
+                    Toggle("Red-Letter Words of Christ", isOn: $viewModel.showRedLetter)
+                    Toggle("Translator-Supplied Italics", isOn: $viewModel.showItalics)
+                    Toggle("Show Verse Numbers", isOn: $viewModel.showVerseNumbers)
+                    Toggle("Keep Screen Awake While Reading", isOn: $viewModel.keepScreenAwake)
                 }
 
                 Section("Journal Paper Style") {
@@ -989,17 +1094,6 @@ public struct ViewSettingsSheet: View {
                         }
                     }
                     .pickerStyle(.segmented)
-                }
-
-                Section("Typography") {
-                    VStack(alignment: .leading) {
-                        Text("Font Size: \(Int(viewModel.fontSize)) pt")
-                        Slider(value: $viewModel.fontSize, in: 14...28, step: 1)
-                    }
-                    VStack(alignment: .leading) {
-                        Text("Line Spacing: \(Int(viewModel.lineSpacing)) pt")
-                        Slider(value: $viewModel.lineSpacing, in: 4...16, step: 1)
-                    }
                 }
             }
             .navigationTitle("Reading & Workspace View")
@@ -1011,6 +1105,120 @@ public struct ViewSettingsSheet: View {
                         dismiss()
                     }
                 }
+            }
+            .sheet(item: $editingCustomPalette) { palette in
+                CustomThemeStudioSheet(viewModel: viewModel, initialPalette: palette)
+            }
+        }
+    }
+}
+
+public struct CustomThemeStudioSheet: View {
+    @ObservedObject var viewModel: BibleWorkspaceViewModel
+    let initialPalette: CustomThemePalette
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var name: String = ""
+    @State private var canvasColor: Color = Color(red: 0.969, green: 0.949, blue: 0.902)
+    @State private var textColor: Color = Color(red: 0.176, green: 0.145, blue: 0.110)
+    @State private var accentColor: Color = Color(red: 0.180, green: 0.380, blue: 0.620)
+    @State private var redLetterColor: Color = Color(red: 0.620, green: 0.145, blue: 0.145)
+    @State private var copiedJSON: Bool = false
+
+    private var currentPalette: CustomThemePalette {
+        CustomThemePalette(
+            id: initialPalette.id,
+            name: name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Custom Theme" : name.trimmingCharacters(in: .whitespacesAndNewlines),
+            canvasHex: UIColor(canvasColor).toHexString(),
+            textHex: UIColor(textColor).toHexString(),
+            accentHex: UIColor(accentColor).toHexString(),
+            redLetterHex: UIColor(redLetterColor).toHexString()
+        )
+    }
+
+    private var previewTheme: ReadingTheme {
+        ReadingTheme.fromCustom(currentPalette)
+    }
+
+    public var body: some View {
+        NavigationStack {
+            Form {
+                Section("Live Preview") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("John 14")
+                                .font(.system(size: 18, weight: .bold, design: .serif))
+                                .foregroundStyle(previewTheme.primaryText)
+                            Spacer()
+                            Text("Strong's G3598")
+                                .font(.caption2.weight(.bold))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(previewTheme.accentBlue.opacity(0.16))
+                                .foregroundStyle(previewTheme.accentBlue)
+                                .clipShape(Capsule())
+                        }
+                        Text("6 ")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(previewTheme.secondaryText)
+                        + Text("Jesus saith unto him, ")
+                            .font(.system(size: 16, design: .serif))
+                            .foregroundStyle(previewTheme.primaryText)
+                        + Text("I am the way, the truth, and the life: no man cometh unto the Father, but by me.")
+                            .font(.system(size: 16, design: .serif))
+                            .foregroundStyle(previewTheme.redLetterColor)
+                    }
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(previewTheme.canvasBackground)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(previewTheme.dividerColor, lineWidth: 1))
+                    .listRowInsets(EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12))
+                }
+
+                Section("Theme Name & Colors") {
+                    TextField("Theme Name (e.g. Warm Linen, Espresso)", text: $name)
+                    ColorPicker("Paper / Background", selection: $canvasColor, supportsOpacity: false)
+                    ColorPicker("Primary Text", selection: $textColor, supportsOpacity: false)
+                    ColorPicker("Accent & Links", selection: $accentColor, supportsOpacity: false)
+                    ColorPicker("Red-Letter Words", selection: $redLetterColor, supportsOpacity: false)
+                }
+
+                Section {
+                    Button {
+                        if let data = try? JSONEncoder().encode(currentPalette),
+                           let str = String(data: data, encoding: .utf8) {
+                            UIPasteboard.general.string = str
+                            copiedJSON = true
+                        }
+                    } label: {
+                        Label(copiedJSON ? "Copied Theme JSON!" : "Copy Theme JSON (for Shipping Presets)", systemImage: copiedJSON ? "checkmark.circle.fill" : "doc.on.doc")
+                            .font(.subheadline)
+                    }
+                } footer: {
+                    Text("Chrome bars, panels, dividers, and light/dark UI chrome are automatically derived for clean contrast.")
+                }
+            }
+            .navigationTitle("Theme Studio")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save & Apply") {
+                        viewModel.saveCustomTheme(currentPalette, applyImmediately: true)
+                        dismiss()
+                    }
+                    .fontWeight(.semibold)
+                }
+            }
+            .onAppear {
+                name = initialPalette.name
+                canvasColor = Color(uiColor: UIColor(hex: initialPalette.canvasHex) ?? .systemBackground)
+                textColor = Color(uiColor: UIColor(hex: initialPalette.textHex) ?? .label)
+                accentColor = Color(uiColor: UIColor(hex: initialPalette.accentHex) ?? .systemBlue)
+                redLetterColor = Color(uiColor: UIColor(hex: initialPalette.redLetterHex) ?? .systemRed)
             }
         }
     }

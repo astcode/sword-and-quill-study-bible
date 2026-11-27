@@ -112,11 +112,20 @@ public final class BibleWorkspaceViewModel: ObservableObject {
 
     // Reading Appearance
     @Published public var theme: ReadingTheme = .paperSepia
+    @Published public var customThemes: [CustomThemePalette] = []
     @Published public var fontSize: Double = 19.0
+    @Published public var studyDeskFontSize: Double = 14.0
+    @Published public var scriptureFontDesign: ScriptureFontDesign = .serif
     @Published public var lineSpacing: Double = 8.0
     @Published public var showVerseNumbers: Bool = true
     @Published public var showRedLetter: Bool = true
     @Published public var showItalics: Bool = true
+    @Published public var isLeftHandedLayout: Bool = false
+    @Published public var keepScreenAwake: Bool = false {
+        didSet {
+            UIApplication.shared.isIdleTimerDisabled = keepScreenAwake
+        }
+    }
 
     // Writing Toolbox State (bottom bar)
     @Published public var showPenToolbox: Bool = false
@@ -1483,14 +1492,54 @@ public final class BibleWorkspaceViewModel: ObservableObject {
     }
 
     public func persistAppearancePreferences() {
-        studyDB.setPreference("theme", value: theme.rawValue)
+        studyDB.setPreference("theme", value: theme.id)
         studyDB.setPreference("font_size", value: String(fontSize))
+        studyDB.setPreference("study_desk_font_size", value: String(studyDeskFontSize))
+        studyDB.setPreference("scripture_font_design", value: scriptureFontDesign.rawValue)
         studyDB.setPreference("line_spacing", value: String(lineSpacing))
         studyDB.setPreference("paper_style", value: paperStyle.rawValue)
         studyDB.setPreference("pencil_only", value: pencilOnly ? "1" : "0")
         studyDB.setPreference("show_ink_reading", value: showInkInReadingMode ? "1" : "0")
         studyDB.setPreference("show_red_letter", value: showRedLetter ? "1" : "0")
         studyDB.setPreference("show_italics", value: showItalics ? "1" : "0")
+        studyDB.setPreference("show_verse_numbers", value: showVerseNumbers ? "1" : "0")
+        studyDB.setPreference("left_handed_layout", value: isLeftHandedLayout ? "1" : "0")
+        studyDB.setPreference("keep_screen_awake", value: keepScreenAwake ? "1" : "0")
+        persistCustomThemes()
+    }
+
+    public func saveCustomTheme(_ palette: CustomThemePalette, applyImmediately: Bool = true) {
+        if let idx = customThemes.firstIndex(where: { $0.id == palette.id }) {
+            customThemes[idx] = palette
+        } else {
+            customThemes.append(palette)
+        }
+        persistCustomThemes()
+        if applyImmediately {
+            theme = ReadingTheme.fromCustom(palette)
+            studyDB.setPreference("theme", value: theme.id)
+        }
+        showToast("Saved theme \"\(palette.name)\"")
+    }
+
+    public func deleteCustomTheme(_ palette: CustomThemePalette) {
+        customThemes.removeAll(where: { $0.id == palette.id })
+        persistCustomThemes()
+        if theme.id == "custom:\(palette.id)" {
+            theme = .paperSepia
+            studyDB.setPreference("theme", value: theme.id)
+        }
+    }
+
+    private func persistCustomThemes() {
+        if let data = try? JSONEncoder().encode(customThemes),
+           let json = String(data: data, encoding: .utf8) {
+            studyDB.setPreference("custom_themes_json", value: json)
+        }
+    }
+
+    public var allAvailableThemes: [ReadingTheme] {
+        ReadingTheme.allCases + customThemes.map { ReadingTheme.fromCustom($0) }
     }
 
     public func persistLayoutPreferences() {
@@ -1501,16 +1550,35 @@ public final class BibleWorkspaceViewModel: ObservableObject {
     }
 
     private func restorePreferences() {
+        if let raw = studyDB.getPreference("custom_themes_json"),
+           let d = raw.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode([CustomThemePalette].self, from: d) {
+            customThemes = decoded
+        }
         if let b = studyDB.getPreference("last_book_id").flatMap(Int.init) { currentBookId = b }
         if let c = studyDB.getPreference("last_chapter").flatMap(Int.init) { currentChapter = c }
-        if let t = studyDB.getPreference("theme").flatMap(ReadingTheme.init(rawValue:)) { theme = t }
+        if let tId = studyDB.getPreference("theme") {
+            if let builtIn = ReadingTheme(rawValue: tId) {
+                theme = builtIn
+            } else if tId.hasPrefix("custom:") {
+                let cid = String(tId.dropFirst("custom:".count))
+                if let custom = customThemes.first(where: { $0.id == cid }) {
+                    theme = ReadingTheme.fromCustom(custom)
+                }
+            }
+        }
         if let f = studyDB.getPreference("font_size").flatMap(Double.init) { fontSize = f }
+        if let sf = studyDB.getPreference("study_desk_font_size").flatMap(Double.init) { studyDeskFontSize = sf }
+        if let fd = studyDB.getPreference("scripture_font_design").flatMap(ScriptureFontDesign.init(rawValue:)) { scriptureFontDesign = fd }
         if let l = studyDB.getPreference("line_spacing").flatMap(Double.init) { lineSpacing = l }
         if let p = studyDB.getPreference("paper_style").flatMap(JournalPaperStyle.init(rawValue:)) { paperStyle = p }
         if let po = studyDB.getPreference("pencil_only") { pencilOnly = (po != "0") }
         if let sir = studyDB.getPreference("show_ink_reading") { showInkInReadingMode = (sir == "1") }
         if let srl = studyDB.getPreference("show_red_letter") { showRedLetter = (srl != "0") }
         if let sit = studyDB.getPreference("show_italics") { showItalics = (sit != "0") }
+        if let svn = studyDB.getPreference("show_verse_numbers") { showVerseNumbers = (svn != "0") }
+        if let lh = studyDB.getPreference("left_handed_layout") { isLeftHandedLayout = (lh == "1") }
+        if let ka = studyDB.getPreference("keep_screen_awake") { keepScreenAwake = (ka == "1") }
         if let sr = studyDB.getPreference("show_ref") { showReferencePanel = (sr != "0") }
         if let sj = studyDB.getPreference("show_journal") { showJournalPanel = (sj != "0") }
         if let lpw = studyDB.getPreference("left_panel_width").flatMap(Double.init) { leftPanelWidth = CGFloat(lpw) }

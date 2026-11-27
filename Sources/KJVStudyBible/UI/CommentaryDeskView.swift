@@ -204,9 +204,9 @@ public struct CommentaryDeskView: View {
             }
 
             Text(entry.body)
-                .font(.system(size: 13.5, design: .serif))
+                .font(.system(size: viewModel.studyDeskFontSize, design: .serif))
                 .foregroundStyle(viewModel.theme.primaryText)
-                .lineSpacing(4)
+                .lineSpacing(max(3, viewModel.studyDeskFontSize * 0.28))
                 .textSelection(.enabled)
 
             if !citedRefs.isEmpty {

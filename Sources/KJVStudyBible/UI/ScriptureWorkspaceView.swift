@@ -299,11 +299,12 @@ public struct ScriptureWorkspaceView: View {
         let journalWidth: CGFloat = viewModel.showJournalPanel ? max(140, usableInnerWidth - scriptureWidth) : 0
         let unifiedWidth: CGFloat = remainingWidth
 
-        ZStack(alignment: .leading) {
+        let isLeftHanded = viewModel.isLeftHandedLayout
+
+        ZStack(alignment: isLeftHanded ? .trailing : .leading) {
             HStack(alignment: .top, spacing: 0) {
-                // DOCKED LEFT PANEL (Wide iPad Landscape)
-                // Study Mode: draggable resize handle; Journaling Mode: locked width for pixel-accurate ink!
-                if useDockedLeftPanel && viewModel.showReferencePanel {
+                // DOCKED STUDY DESK ON LEFT (Right-Handed default)
+                if !isLeftHanded && useDockedLeftPanel && viewModel.showReferencePanel {
                     LeftStudyDeskView(viewModel: viewModel)
                         .frame(width: dockedLeftWidth)
                         .frame(maxHeight: .infinity)
@@ -313,14 +314,15 @@ public struct ScriptureWorkspaceView: View {
                         leftPanelResizeDivider(
                             currentWidth: dockedLeftWidth,
                             minWidth: minLeftWidth,
-                            maxWidth: maxLeftWidth
+                            maxWidth: maxLeftWidth,
+                            invertDrag: false
                         )
                     } else {
                         dashedVerticalDivider
                     }
                 }
 
-                // UNIFIED ZOOMABLE WRITING WORKSPACE: Center KJV Scripture + Right Journal Margin
+                // UNIFIED ZOOMABLE WRITING WORKSPACE: KJV Scripture + Journal Margin (swaps order in Left-Handed Mode!)
                 ZoomableCanvasScrollView(zoomScale: $viewModel.journalZoomScale, contentWidth: unifiedWidth) {
                     ZStack(alignment: .topLeading) {
                         HStack(alignment: .top, spacing: 0) {
@@ -328,12 +330,17 @@ public struct ScriptureWorkspaceView: View {
                                 Spacer(minLength: 0)
                             }
 
+                            if isLeftHanded && viewModel.showJournalPanel {
+                                journalMarginColumn(width: journalWidth)
+                                dashedVerticalDivider
+                            }
+
                             scriptureColumn(width: scriptureWidth)
 
-                            if viewModel.showJournalPanel {
+                            if !isLeftHanded && viewModel.showJournalPanel {
                                 dashedVerticalDivider
                                 journalMarginColumn(width: journalWidth)
-                            } else {
+                            } else if !viewModel.showJournalPanel {
                                 Spacer(minLength: 0)
                             }
                         }
@@ -413,35 +420,66 @@ public struct ScriptureWorkspaceView: View {
                         )
                     }
                 }
+
+                // DOCKED STUDY DESK ON RIGHT (Left-Handed Mode)
+                if isLeftHanded && useDockedLeftPanel && viewModel.showReferencePanel {
+                    if canResizeLeftPanel {
+                        leftPanelResizeDivider(
+                            currentWidth: dockedLeftWidth,
+                            minWidth: minLeftWidth,
+                            maxWidth: maxLeftWidth,
+                            invertDrag: true
+                        )
+                    } else {
+                        dashedVerticalDivider
+                    }
+
+                    LeftStudyDeskView(viewModel: viewModel)
+                        .frame(width: dockedLeftWidth)
+                        .frame(maxHeight: .infinity)
+                        .clipped()
+                }
             }
 
-            // SLIDE-OVER LEFT STUDY DESK (iPad Portrait, Split View, Slide Over & Compact Widths)
-            // Uses side-by-side HStack so the dim backdrop NEVER overlaps or steals scroll gestures from LeftStudyDeskView!
+            // SLIDE-OVER STUDY DESK (iPad Portrait, Split View, Slide Over & Compact Widths)
             if !useDockedLeftPanel && viewModel.showReferencePanel {
                 HStack(spacing: 0) {
+                    if isLeftHanded {
+                        Color.black.opacity(0.24)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    viewModel.toggleReferencePanel()
+                                }
+                            }
+                    }
+
                     LeftStudyDeskView(viewModel: viewModel)
                         .frame(width: leftDrawerWidth)
                         .frame(maxHeight: .infinity)
                         .background(viewModel.theme.panelBackground)
                         .clipped()
-                        .shadow(color: .black.opacity(0.25), radius: 14, x: 4)
+                        .shadow(color: .black.opacity(0.25), radius: 14, x: isLeftHanded ? -4 : 4)
 
-                    Color.black.opacity(0.24)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            withAnimation(.easeInOut(duration: 0.2)) {
-                                viewModel.toggleReferencePanel()
+                    if !isLeftHanded {
+                        Color.black.opacity(0.24)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    viewModel.toggleReferencePanel()
+                                }
                             }
-                        }
+                    }
                 }
                 .zIndex(20)
-                .transition(.move(edge: .leading))
+                .transition(.move(edge: isLeftHanded ? .trailing : .leading))
             }
         }
     }
 
-    private func leftPanelResizeDivider(currentWidth: CGFloat, minWidth: CGFloat, maxWidth: CGFloat) -> some View {
+    private func leftPanelResizeDivider(currentWidth: CGFloat, minWidth: CGFloat, maxWidth: CGFloat, invertDrag: Bool = false) -> some View {
         ZStack {
             Rectangle()
                 .fill(isDraggingLeftDivider ? viewModel.theme.accentBlue.opacity(0.6) : viewModel.theme.dividerColor)
@@ -462,7 +500,8 @@ public struct ScriptureWorkspaceView: View {
                         isDraggingLeftDivider = true
                     }
                     let base = dragStartLeftWidth ?? currentWidth
-                    let next = min(maxWidth, max(minWidth, base + value.translation.width))
+                    let delta = invertDrag ? -value.translation.width : value.translation.width
+                    let next = min(maxWidth, max(minWidth, base + delta))
                     viewModel.leftPanelWidth = next
                 }
                 .onEnded { _ in
@@ -758,8 +797,9 @@ public struct ScriptureWorkspaceView: View {
     }
 
     private func formattedVerseText(_ verse: Verse) -> AttributedString {
-        let baseFont = Font.system(size: viewModel.fontSize, weight: .regular, design: .serif)
-        let italicFont = Font.system(size: viewModel.fontSize, weight: .regular, design: .serif).italic()
+        let design = viewModel.scriptureFontDesign.fontDesign
+        let baseFont = Font.system(size: viewModel.fontSize, weight: .regular, design: design)
+        let italicFont = Font.system(size: viewModel.fontSize, weight: .regular, design: design).italic()
         let baseColor = viewModel.theme.primaryText
         let redColor = viewModel.theme.redLetterColor
 
