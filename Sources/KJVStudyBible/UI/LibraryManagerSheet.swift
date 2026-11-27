@@ -6,10 +6,17 @@ import UniformTypeIdentifiers
 public struct LibraryManagerSheet: View {
     @ObservedObject var viewModel: BibleWorkspaceViewModel
     @ObservedObject var moduleManager: ModuleManager
+    @ObservedObject var kokoroManager: KokoroVoiceManager
     @Environment(\.dismiss) private var dismiss
 
     @State private var searchText: String = ""
     @State private var showImportPicker: Bool = false
+
+    public init(viewModel: BibleWorkspaceViewModel, moduleManager: ModuleManager) {
+        self.viewModel = viewModel
+        self.moduleManager = moduleManager
+        self.kokoroManager = viewModel.audioPlayer.kokoroManager
+    }
 
     private var filteredRemote: [StudyModuleManifest] {
         let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -40,6 +47,86 @@ public struct LibraryManagerSheet: View {
                             .font(.caption.weight(.semibold))
                         }
                     }
+                }
+
+                // Studio Neural Audio Narrator (Kokoro-82M)
+                Section {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(alignment: .top, spacing: 12) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(spacing: 6) {
+                                    Text("Kokoro-82M Studio Neural Voices")
+                                        .font(.subheadline.weight(.semibold))
+                                    Text("11 Voices")
+                                        .font(.caption2.weight(.bold))
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(viewModel.theme.accentBlue.opacity(0.14))
+                                        .foregroundStyle(viewModel.theme.accentBlue)
+                                        .clipShape(Capsule())
+                                }
+                                Text("Lifelike on-device neural Bible narration (US & UK voices including Michael, George, Bella, and Emma). Works 100% offline with zero subscription.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                if kokoroManager.isInstalled {
+                                    Text("Installed · \(kokoroManager.formattedDiskSize) on disk · Active in Read Aloud")
+                                        .font(.caption2.weight(.medium))
+                                        .foregroundStyle(.green)
+                                } else {
+                                    Text("Optional download (~96 MB) · Falls back to Apple Voices if not installed")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+
+                            Spacer()
+
+                            if kokoroManager.isDownloading {
+                                Button("Cancel", role: .destructive) {
+                                    kokoroManager.cancelDownload()
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            } else if kokoroManager.isInstalled {
+                                Button(role: .destructive) {
+                                    kokoroManager.removeVoicePack()
+                                } label: {
+                                    Image(systemName: "trash")
+                                        .font(.subheadline)
+                                }
+                                .buttonStyle(.borderless)
+                                .padding(.top, 4)
+                            } else {
+                                Button {
+                                    kokoroManager.startDownload()
+                                } label: {
+                                    Label("Get", systemImage: "arrow.down.circle.fill")
+                                        .font(.caption.weight(.semibold))
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+                                .tint(viewModel.theme.accentBlue)
+                            }
+                        }
+
+                        if kokoroManager.isDownloading {
+                            VStack(alignment: .leading, spacing: 4) {
+                                ProgressView(value: kokoroManager.downloadProgress)
+                                    .tint(viewModel.theme.accentBlue)
+                                Text(kokoroManager.statusText ?? "Downloading… \(Int(kokoroManager.downloadProgress * 100))%")
+                                    .font(.caption2.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
+                        } else if let err = kokoroManager.errorMessage {
+                            Text(err)
+                                .font(.caption2)
+                                .foregroundStyle(.red)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                } header: {
+                    Text("Studio Neural Audio (Optional)")
                 }
 
                 // Installed Modules
