@@ -869,6 +869,17 @@ public struct ScriptureWorkspaceView: View {
 
     private var mainMenuOverlay: some View {
         HStack(spacing: 0) {
+            if viewModel.isLeftHandedLayout {
+                Color.black.opacity(0.32)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            viewModel.showMainMenu = false
+                        }
+                    }
+            }
+
             VStack(alignment: .leading, spacing: 0) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Sword & Quill Study Bible")
@@ -977,14 +988,16 @@ public struct ScriptureWorkspaceView: View {
             .background(viewModel.theme.panelBackground)
             .shadow(radius: 16)
 
-            Color.black.opacity(0.32)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        viewModel.showMainMenu = false
+            if !viewModel.isLeftHandedLayout {
+                Color.black.opacity(0.32)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            viewModel.showMainMenu = false
+                        }
                     }
-                }
+            }
         }
         .zIndex(30)
         .transition(.opacity)

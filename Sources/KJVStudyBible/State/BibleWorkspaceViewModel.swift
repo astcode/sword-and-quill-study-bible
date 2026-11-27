@@ -698,50 +698,50 @@ public final class BibleWorkspaceViewModel: ObservableObject {
         return sWidth + 24.0 + offset
     }
 
-    /// Translates active chapter margin items (pins, clips, study links, stickers) cleanly between
-    /// Right-Handed and Left-Handed zones without mirroring text or shapes.
+    /// Spine-mirrors active chapter margin items (pins, clips, study links, stickers) AND Apple Pencil
+    /// handwriting clusters across the gutter between Right-Handed and Left-Handed modes — preserving
+    /// distance from the Bible spine while keeping every word and card 100% upright & readable.
     public func repositionCanvasItemsForHandednessChange(fromLeftHanded oldLeft: Bool, toLeftHanded newLeft: Bool) {
         guard oldLeft != newLeft, showJournalPanel else { return }
         let sWidth = currentScriptureWidth > 0 ? Double(currentScriptureWidth) : 440.0
         let cWidth = currentCanvasWidth > sWidth ? Double(currentCanvasWidth) : (sWidth + 340.0)
         let jWidth = max(140.0, cWidth - sWidth - 1.0)
 
-        func translateX(_ x: Double) -> Double {
+        func mirrorPointX(_ x: Double) -> Double {
             if !oldLeft && newLeft {
                 // Right-Handed -> Left-Handed
                 if x >= sWidth - 8.0 {
-                    // Margin item -> move into left margin
-                    return max(16.0, x - (sWidth + 1.0))
+                    let distFromGutter = max(0, x - (sWidth + 1.0))
+                    return min(max(18.0, jWidth - distFromGutter), max(22.0, jWidth - 18.0))
                 } else {
-                    // Scripture item -> move onto right-side Scripture
                     return x + (jWidth + 1.0)
                 }
             } else {
                 // Left-Handed -> Right-Handed
                 if x < jWidth + 8.0 {
-                    // Left margin item -> move back into right margin
-                    return x + (sWidth + 1.0)
+                    let distFromGutter = max(0, jWidth - x)
+                    return min(max(sWidth + 18.0, (sWidth + 1.0) + distFromGutter), max(sWidth + 22.0, cWidth - 18.0))
                 } else {
-                    // Right-side Scripture item -> move back onto left-side Scripture
                     return max(16.0, x - (jWidth + 1.0))
                 }
             }
         }
 
+        // 1. Spine-mirror cards, chips, links, and stickers
         for idx in pinnedReferences.indices {
-            pinnedReferences[idx].posX = translateX(pinnedReferences[idx].posX)
+            pinnedReferences[idx].posX = mirrorPointX(pinnedReferences[idx].posX)
             studyDB.upsertPinnedReference(pinnedReferences[idx], studyId: activeLayerStudyId)
         }
         for idx in journalClips.indices {
-            journalClips[idx].posX = translateX(journalClips[idx].posX)
+            journalClips[idx].posX = mirrorPointX(journalClips[idx].posX)
             studyDB.upsertJournalClip(journalClips[idx], studyId: activeLayerStudyId)
         }
         for idx in chapterStudyLinks.indices {
-            chapterStudyLinks[idx].posX = translateX(chapterStudyLinks[idx].posX)
+            chapterStudyLinks[idx].posX = mirrorPointX(chapterStudyLinks[idx].posX)
             studyDB.upsertStudyMarginLink(chapterStudyLinks[idx])
         }
         for idx in chapterStickers.indices {
-            chapterStickers[idx].posX = translateX(chapterStickers[idx].posX)
+            chapterStickers[idx].posX = mirrorPointX(chapterStickers[idx].posX)
             let st = chapterStickers[idx]
             studyDB.updatePlacedSticker(
                 id: st.id,
@@ -753,6 +753,143 @@ public final class BibleWorkspaceViewModel: ObservableObject {
                 opacity: st.opacity
             )
         }
+
+        // 2. Immediately spine-mirror Apple Pencil handwriting clusters (zero backwards letters!)
+        if !chapterDrawing.strokes.isEmpty {
+            let movedDrawing = spineMirrorDrawing(
+                chapterDrawing,
+                fromLeftHanded: oldLeft,
+                toLeftHanded: newLeft,
+                scriptureWidth: sWidth,
+                canvasWidth: cWidth
+            )
+            self.chapterDrawing = movedDrawing
+            self.drawingRevision += 1
+
+            // Update saved anchors to reflect the new handedness so updateLayoutForInkReflow doesn't double-move
+            if let oldA = savedInkAnchors {
+                let shiftScripture = (!oldLeft && newLeft) ? (jWidth + 1.0) : -(jWidth + 1.0)
+                var shiftedRects: [Int: VerseAnchorRect] = [:]
+                for (k, r) in oldA.verseRects {
+                    shiftedRects[k] = VerseAnchorRect(rect: CGRect(x: r.minX + shiftScripture, y: r.minY, width: r.width, height: r.height))
+                }
+                let updatedAnchors = ChapterInkAnchors(
+                    scriptureWidth: oldA.scriptureWidth,
+                    canvasWidth: oldA.canvasWidth,
+                    verseRects: shiftedRects,
+                    isLeftHanded: newLeft
+                )
+                self.savedInkAnchors = updatedAnchors
+                studyDB.saveChapterInk(
+                    bookId: currentBookId,
+                    chapter: currentChapter,
+                    data: movedDrawing.dataRepresentation(),
+                    fontSize: fontSize,
+                    anchors: updatedAnchors,
+                    studyId: activeLayerStudyId
+                )
+            } else {
+                studyDB.saveChapterInk(
+                    bookId: currentBookId,
+                    chapter: currentChapter,
+                    data: movedDrawing.dataRepresentation(),
+                    fontSize: fontSize,
+                    anchors: makeCurrentInkAnchors(),
+                    studyId: activeLayerStudyId
+                )
+            }
+        }
+    }
+
+    private func spineMirrorDrawing(
+        _ drawing: PKDrawing,
+        fromLeftHanded oldLeft: Bool,
+        toLeftHanded newLeft: Bool,
+        scriptureWidth sWidth: Double,
+        canvasWidth cWidth: Double
+    ) -> PKDrawing {
+        let jWidth = max(140.0, cWidth - sWidth - 1.0)
+        let strokes = drawing.strokes
+        guard !strokes.isEmpty else { return drawing }
+
+        var scriptureIndices: [Int] = []
+        var marginIndices: [Int] = []
+        for (i, st) in strokes.enumerated() {
+            let midX = Double(st.renderBounds.midX)
+            let isMargin = oldLeft ? (midX < jWidth + 6.0) : (midX >= sWidth - 6.0)
+            if isMargin {
+                marginIndices.append(i)
+            } else {
+                scriptureIndices.append(i)
+            }
+        }
+
+        var resultStrokes = strokes
+
+        // A. Over-Scripture strokes translate cleanly to stay locked to the exact Bible words
+        let scriptureDX: CGFloat = CGFloat((!oldLeft && newLeft) ? (jWidth + 1.0) : -(jWidth + 1.0))
+        for i in scriptureIndices {
+            var s = resultStrokes[i]
+            s.transform = s.transform.concatenating(CGAffineTransform(translationX: scriptureDX, y: 0))
+            resultStrokes[i] = s
+        }
+
+        // B. Cluster nearby margin strokes into note blocks (union-find on expanded bounding boxes)
+        // so each handwritten word/note stays intact left-to-right while its block center mirrors across the spine!
+        var parent = Array(0..<marginIndices.count)
+        func find(_ x: Int) -> Int {
+            var cur = x
+            while parent[cur] != cur {
+                parent[cur] = parent[parent[cur]]
+                cur = parent[cur]
+            }
+            return cur
+        }
+        func union(_ a: Int, _ b: Int) {
+            let ra = find(a), rb = find(b)
+            if ra != rb { parent[ra] = rb }
+        }
+
+        let expandedRects = marginIndices.map { strokes[$0].renderBounds.insetBy(dx: -36, dy: -26) }
+        for a in 0..<marginIndices.count {
+            for b in (a + 1)..<marginIndices.count {
+                if expandedRects[a].intersects(expandedRects[b]) {
+                    union(a, b)
+                }
+            }
+        }
+
+        var clusters: [Int: [Int]] = [:]
+        for idx in 0..<marginIndices.count {
+            clusters[find(idx), default: []].append(marginIndices[idx])
+        }
+
+        for (_, strokeIds) in clusters {
+            var box = CGRect.null
+            for sid in strokeIds {
+                box = box.union(strokes[sid].renderBounds)
+            }
+            let midX = Double(box.midX)
+            let halfW = Double(box.width) * 0.5
+            let targetMidX: Double
+            if !oldLeft && newLeft {
+                let distFromGutter = max(0, midX - (sWidth + 1.0))
+                let rawTarget = jWidth - distFromGutter
+                targetMidX = min(max(halfW + 8.0, rawTarget), max(halfW + 8.0, jWidth - halfW - 8.0))
+            } else {
+                let distFromGutter = max(0, jWidth - midX)
+                let rawTarget = (sWidth + 1.0) + distFromGutter
+                targetMidX = min(max(sWidth + 8.0 + halfW, rawTarget), max(sWidth + 8.0 + halfW, cWidth - halfW - 8.0))
+            }
+            let dx = CGFloat(targetMidX - midX)
+            for sid in strokeIds {
+                var s = resultStrokes[sid]
+                s.transform = s.transform.concatenating(CGAffineTransform(translationX: dx, y: 0))
+                resultStrokes[sid] = s
+            }
+        }
+
+        return PKDrawing(strokes: resultStrokes)
     }
 
     public func handleCanvasDrawingChanged(_ newDrawing: PKDrawing, canUndo: Bool, canRedo: Bool) {
