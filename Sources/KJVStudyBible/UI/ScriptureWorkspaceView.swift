@@ -4,6 +4,8 @@ import UniformTypeIdentifiers
 public struct ScriptureWorkspaceView: View {
     @ObservedObject var viewModel: BibleWorkspaceViewModel
     @State private var verseFrames: [Int: CGRect] = [:]
+    @State private var isDraggingLeftDivider: Bool = false
+    @State private var dragStartLeftWidth: CGFloat? = nil
     @State private var unifiedNaturalHeight: CGFloat = 1200
 
     public var body: some View {
@@ -264,8 +266,18 @@ public struct ScriptureWorkspaceView: View {
         // magnifies the exact same unchanging coordinate space and Apple Pencil ink stays 100% pixel-locked!
         let useDockedLeftPanel = totalWidth >= 860
         let leftDrawerWidth: CGFloat = min(320, max(260, totalWidth * 0.36))
-        let dockedLeftWidth: CGFloat = (useDockedLeftPanel && viewModel.showReferencePanel) ? min(300, max(240, totalWidth * 0.27)) : 0
-        let leftDividerWidth: CGFloat = dockedLeftWidth > 0 ? 1 : 0
+        let defaultLeftWidth: CGFloat = min(300, max(240, totalWidth * 0.27))
+        let minLeftWidth: CGFloat = 220
+        let maxLeftWidth: CGFloat = max(340, min(580, totalWidth * 0.54))
+        // In Journaling Mode (showJournalPanel == true), lock the left panel to its canonical default width
+        // so Apple Pencil ink, margin clips, and stickers stay 100% pixel-aligned.
+        // In Study Mode (showJournalPanel == false), allow freely dragging the divider wider/narrower!
+        let canResizeLeftPanel = useDockedLeftPanel && viewModel.showReferencePanel && !viewModel.showJournalPanel
+        let resolvedLeftWidth: CGFloat = (canResizeLeftPanel && viewModel.leftPanelWidth > 0)
+            ? min(maxLeftWidth, max(minLeftWidth, viewModel.leftPanelWidth))
+            : defaultLeftWidth
+        let dockedLeftWidth: CGFloat = (useDockedLeftPanel && viewModel.showReferencePanel) ? resolvedLeftWidth : 0
+        let leftDividerWidth: CGFloat = dockedLeftWidth > 0 ? (canResizeLeftPanel ? 12 : 1) : 0
         let remainingWidth = max(280, totalWidth - dockedLeftWidth - leftDividerWidth)
         let innerDividerWidth: CGFloat = viewModel.showJournalPanel ? 1 : 0
         let usableInnerWidth = max(260, remainingWidth - innerDividerWidth)
@@ -281,12 +293,22 @@ public struct ScriptureWorkspaceView: View {
         ZStack(alignment: .leading) {
             HStack(alignment: .top, spacing: 0) {
                 // DOCKED LEFT PANEL (Wide iPad Landscape)
+                // Study Mode: draggable resize handle; Journaling Mode: locked width for pixel-accurate ink!
                 if useDockedLeftPanel && viewModel.showReferencePanel {
                     LeftStudyDeskView(viewModel: viewModel)
                         .frame(width: dockedLeftWidth)
                         .frame(maxHeight: .infinity)
                         .clipped()
-                    dashedVerticalDivider
+
+                    if canResizeLeftPanel {
+                        leftPanelResizeDivider(
+                            currentWidth: dockedLeftWidth,
+                            minWidth: minLeftWidth,
+                            maxWidth: maxLeftWidth
+                        )
+                    } else {
+                        dashedVerticalDivider
+                    }
                 }
 
                 // UNIFIED ZOOMABLE WRITING WORKSPACE: Center KJV Scripture + Right Journal Margin
@@ -406,6 +428,44 @@ public struct ScriptureWorkspaceView: View {
                 }
                 .zIndex(20)
                 .transition(.move(edge: .leading))
+            }
+        }
+    }
+
+    private func leftPanelResizeDivider(currentWidth: CGFloat, minWidth: CGFloat, maxWidth: CGFloat) -> some View {
+        ZStack {
+            Rectangle()
+                .fill(isDraggingLeftDivider ? viewModel.theme.accentBlue.opacity(0.6) : viewModel.theme.dividerColor)
+                .frame(width: isDraggingLeftDivider ? 2 : 1)
+
+            Capsule()
+                .fill(isDraggingLeftDivider ? viewModel.theme.accentBlue : viewModel.theme.secondaryText.opacity(0.42))
+                .frame(width: 4, height: 38)
+        }
+        .frame(width: 12)
+        .frame(maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .gesture(
+            DragGesture(minimumDistance: 2, coordinateSpace: .global)
+                .onChanged { value in
+                    if dragStartLeftWidth == nil {
+                        dragStartLeftWidth = currentWidth
+                        isDraggingLeftDivider = true
+                    }
+                    let base = dragStartLeftWidth ?? currentWidth
+                    let next = min(maxWidth, max(minWidth, base + value.translation.width))
+                    viewModel.leftPanelWidth = next
+                }
+                .onEnded { _ in
+                    isDraggingLeftDivider = false
+                    dragStartLeftWidth = nil
+                    viewModel.persistLayoutPreferences()
+                }
+        )
+        .onTapGesture(count: 2) {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                viewModel.leftPanelWidth = 0
+                viewModel.persistLayoutPreferences()
             }
         }
     }

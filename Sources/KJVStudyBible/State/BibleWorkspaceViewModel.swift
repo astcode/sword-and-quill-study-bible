@@ -86,6 +86,7 @@ public final class BibleWorkspaceViewModel: ObservableObject {
     @Published public var expandedReferenceVerses: Set<Int> = []
     @Published public var paperStyle: JournalPaperStyle = .ruled
     @Published public var journalZoomScale: CGFloat = 1.0
+    @Published public var leftPanelWidth: CGFloat = 0 // 0 = auto default; > 0 = user-dragged width
 
     // Parallel Bible Reader State (Left Panel Parallel Tab)
     @Published public var parallelBookId: Int = 40 // Matthew (great for Gospel harmony with John!)
@@ -96,7 +97,7 @@ public final class BibleWorkspaceViewModel: ObservableObject {
     @Published public var popoverVerse: Verse? = nil
 
     public var shouldShowInkOverlay: Bool {
-        workspaceMode != .reading || showInkInReadingMode
+        showJournalPanel || showInkInReadingMode
     }
 
     // Reading Appearance
@@ -1410,9 +1411,10 @@ public final class BibleWorkspaceViewModel: ObservableObject {
         studyDB.setPreference("show_italics", value: showItalics ? "1" : "0")
     }
 
-    private func persistLayoutPreferences() {
+    public func persistLayoutPreferences() {
         studyDB.setPreference("show_ref", value: showReferencePanel ? "1" : "0")
         studyDB.setPreference("show_journal", value: showJournalPanel ? "1" : "0")
+        studyDB.setPreference("left_panel_width", value: String(format: "%.1f", Double(leftPanelWidth)))
         studyDB.setPreference("ref_filter", value: referenceFilter.rawValue)
     }
 
@@ -1429,6 +1431,7 @@ public final class BibleWorkspaceViewModel: ObservableObject {
         if let sit = studyDB.getPreference("show_italics") { showItalics = (sit != "0") }
         if let sr = studyDB.getPreference("show_ref") { showReferencePanel = (sr != "0") }
         if let sj = studyDB.getPreference("show_journal") { showJournalPanel = (sj != "0") }
+        if let lpw = studyDB.getPreference("left_panel_width").flatMap(Double.init) { leftPanelWidth = CGFloat(lpw) }
         if let rf = studyDB.getPreference("ref_filter").flatMap(ReferenceSourceFilter.init(rawValue:)) { referenceFilter = rf }
         if let sar = studyDB.getPreference("show_all_refs") { showAllReferencesExpanded = (sar == "1") }
         if let pb = studyDB.getPreference("parallel_book_id").flatMap(Int.init) { parallelBookId = pb }
