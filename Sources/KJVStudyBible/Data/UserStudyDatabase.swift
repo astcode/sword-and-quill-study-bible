@@ -14,14 +14,16 @@ public final class UserStudyDatabase: @unchecked Sendable {
         autoCheckpointFrames: 32
     )
 
-    public init() {
+    public init(customURL: URL? = nil) {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-        self.dbURL = docs.appendingPathComponent("user_study.mql")
+        self.dbURL = customURL ?? docs.appendingPathComponent("user_study.mql")
         self.legacySQLiteURL = docs.appendingPathComponent("user_study.sqlite")
         if let opened = try? MagQLite(path: dbURL.path, config: Self.dbConfig) {
             self.db = opened
             initializeSchemaUnlocked()
-            migrateLegacySQLiteIfNeededUnlocked()
+            if customURL == nil {
+                migrateLegacySQLiteIfNeededUnlocked()
+            }
             collapseConsecutiveHistoryDuplicatesUnlocked()
             seedDefaultHighlightCategoriesUnlocked()
             seedDefaultStickersUnlocked()

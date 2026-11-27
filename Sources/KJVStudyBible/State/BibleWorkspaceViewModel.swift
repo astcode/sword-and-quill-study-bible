@@ -155,6 +155,21 @@ public final class BibleWorkspaceViewModel: ObservableObject {
 
     public init() {
         self.referenceDB = ReferenceDatabase()
+        #if DEBUG
+        if let showcaseMode = ProcessInfo.processInfo.environment["SWORDQUILL_SHOWCASE"], !showcaseMode.isEmpty {
+            let tmpURL = FileManager.default.temporaryDirectory.appendingPathComponent("sq_showcase_\(showcaseMode).mql")
+            try? FileManager.default.removeItem(at: tmpURL)
+            try? FileManager.default.removeItem(at: URL(fileURLWithPath: tmpURL.path + ".wal"))
+            try? FileManager.default.removeItem(at: URL(fileURLWithPath: tmpURL.path + ".pages"))
+            self.studyDB = UserStudyDatabase(customURL: tmpURL)
+            self.books = referenceDB.allBooks()
+            reloadUserCollections()
+            navigate(to: VerseRef(bookId: 43, chapter: 14, verse: nil), pushHistory: true)
+            navigateParallel(bookId: 40, chapter: 5)
+            applyDebugShowcase(mode: showcaseMode)
+            return
+        }
+        #endif
         self.studyDB = UserStudyDatabase()
         self.books = referenceDB.allBooks()
 
