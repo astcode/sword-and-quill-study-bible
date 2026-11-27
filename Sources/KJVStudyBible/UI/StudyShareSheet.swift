@@ -5,6 +5,7 @@ import UIKit
 
 public struct StudyShareSheet: View {
     @ObservedObject var viewModel: BibleWorkspaceViewModel
+    @ObservedObject var store: StoreManager
     let study: StudySession
     @Environment(\.dismiss) private var dismiss
 
@@ -13,6 +14,12 @@ public struct StudyShareSheet: View {
     @State private var shareFileItem: ShareSheetItem? = nil
     @State private var showFullScreenQR: Bool = false
     @State private var copiedLinkNotice: Bool = false
+
+    public init(viewModel: BibleWorkspaceViewModel, study: StudySession) {
+        self.viewModel = viewModel
+        self._store = ObservedObject(wrappedValue: viewModel.storeManager)
+        self.study = study
+    }
 
     private var trailEntries: [StudyTrailEntry] {
         viewModel.studyDB.studyTrailEntries(studyId: study.id)
@@ -40,7 +47,11 @@ public struct StudyShareSheet: View {
     public var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
+                if !store.isProUnlocked {
+                    ClassroomProUpgradeView(store: store, theme: viewModel.theme, studyName: study.name)
+                        .padding(16)
+                } else {
+                    VStack(alignment: .leading, spacing: 16) {
                     // Pro Feature Header Banner
                     HStack(spacing: 12) {
                         Image(systemName: "qrcode.viewfinder")
@@ -59,7 +70,7 @@ public struct StudyShareSheet: View {
                                     .foregroundStyle(.white)
                                     .padding(.horizontal, 6)
                                     .padding(.vertical, 2)
-                                    .background(Color.orange)
+                                    .background(Color.green)
                                     .clipShape(Capsule())
                             }
                             Text("Students, spouses, & classes always receive and import lessons for free.")
@@ -67,6 +78,14 @@ public struct StudyShareSheet: View {
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
+                        #if DEBUG
+                        Button("Lock (Dev)") {
+                            store.debugSimulateProUnlocked = false
+                        }
+                        .font(.caption2.weight(.semibold))
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
+                        #endif
                     }
                     .padding(12)
                     .background(viewModel.theme.panelBackground)
@@ -209,8 +228,9 @@ public struct StudyShareSheet: View {
                             .buttonStyle(.bordered)
                         }
                     }
+                    .padding(16)
+                    }
                 }
-                .padding(16)
             }
             .navigationTitle("Share Study Lesson")
             .navigationBarTitleDisplayMode(.inline)

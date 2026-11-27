@@ -229,6 +229,9 @@ public struct ScriptureWorkspaceView: View {
         .sheet(isPresented: $viewModel.showMemoryDrills) {
             MemoryDrillsSheet(viewModel: viewModel)
         }
+        .sheet(isPresented: $viewModel.showSupportSheet) {
+            SupportSwordAndQuillSheet(store: viewModel.storeManager, theme: viewModel.theme)
+        }
         .sheet(isPresented: $viewModel.showNewStudySheet) {
             NewStudySheet(viewModel: viewModel)
         }
@@ -887,6 +890,10 @@ public struct ScriptureWorkspaceView: View {
                         menuButton("Study Dashboard & Backup", icon: "chart.bar.doc.horizontal") {
                             viewModel.showMainMenu = false
                             viewModel.showStudyDashboard = true
+                        }
+                        menuButton("Support & Classroom Pro", icon: "heart.text.square") {
+                            viewModel.showMainMenu = false
+                            viewModel.showSupportSheet = true
                         }
 
                         Divider().overlay(viewModel.theme.dividerColor).padding(.vertical, 2)

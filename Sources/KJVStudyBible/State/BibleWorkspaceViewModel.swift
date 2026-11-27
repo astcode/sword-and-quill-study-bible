@@ -40,9 +40,11 @@ public final class BibleWorkspaceViewModel: ObservableObject {
     @Published public var showStudyDashboard: Bool = false
     @Published public var showReadingPlans: Bool = false
     @Published public var showMemoryDrills: Bool = false
+    @Published public var showSupportSheet: Bool = false
     @Published public var audioSpeakingVerseNumber: Int? = nil
     @Published public var isAudioBarVisible: Bool = false
     public let audioPlayer = BibleAudioPlayer()
+    public let storeManager = StoreManager()
     @Published public var backupExportURL: URL? = nil
     @Published public var activeShareSheetItem: ShareSheetItem? = nil
 
