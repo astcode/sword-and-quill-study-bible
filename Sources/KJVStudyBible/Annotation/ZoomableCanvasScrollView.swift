@@ -50,8 +50,11 @@ public struct ZoomableCanvasScrollView<Content: View>: UIViewRepresentable {
         scrollView.contentInsetAdjustmentBehavior = .never
         scrollView.automaticallyAdjustsScrollIndicatorInsets = false
         scrollView.delaysContentTouches = false
-        // Finger-only pan/scroll so Apple Pencil NEVER scrolls when writing
-        scrollView.panGestureRecognizer.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        scrollView.canCancelContentTouches = false
+        // Finger-only pan & pinch so Palm + Apple Pencil NEVER triggers pinch-to-zoom or scroll while writing!
+        let directOnly = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        scrollView.panGestureRecognizer.allowedTouchTypes = directOnly
+        scrollView.pinchGestureRecognizer?.allowedTouchTypes = directOnly
 
         let host = UIHostingController(rootView: content)
         host.safeAreaRegions = []

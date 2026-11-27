@@ -25,6 +25,13 @@ public final class PassthroughPKCanvasView: PKCanvasView {
         isOpaque = false
         clipsToBounds = true
         isScrollEnabled = false
+        minimumZoomScale = 1.0
+        maximumZoomScale = 1.0
+        bouncesZoom = false
+        bounces = false
+        alwaysBounceVertical = false
+        alwaysBounceHorizontal = false
+        isMultipleTouchEnabled = false
         contentInsetAdjustmentBehavior = .never
         automaticallyAdjustsScrollIndicatorInsets = false
         contentInset = .zero
