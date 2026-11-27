@@ -1,9 +1,9 @@
 {
   "id": "piper-lessac-en",
   "title": "Lessac \u00b7 Fast Neural Narrator (US Female)",
-  "version": 1,
-  "totalDownloadBytes": 59674618,
-  "totalDiskBytes": 69455892,
+  "version": 3,
+  "totalDownloadBytes": 59731346,
+  "totalDiskBytes": 69951184,
   "files": [
     {
       "file": "model.part0.sqz",
@@ -30,8 +30,8 @@
       "file": "lexicon-en-us.txt.sqz",
       "target": "lexicon-en-us.txt",
       "append": false,
-      "rawSize": 6305773,
-      "compressedSize": 1274415
+      "rawSize": 6801065,
+      "compressedSize": 1331143
     }
   ]
 }

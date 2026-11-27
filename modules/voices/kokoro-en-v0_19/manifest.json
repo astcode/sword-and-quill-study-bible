@@ -1,9 +1,9 @@
 {
   "id": "kokoro-en-v0_19",
   "title": "Kokoro-82M Studio Neural Voices",
-  "version": 1,
-  "totalDownloadBytes": 94890429,
-  "totalDiskBytes": 146249732,
+  "version": 3,
+  "totalDownloadBytes": 94947104,
+  "totalDiskBytes": 146745002,
   "files": [
     {
       "file": "model.part0.sqz",
@@ -44,8 +44,8 @@
       "file": "lexicon-en-us.txt.sqz",
       "target": "lexicon-en-us.txt",
       "append": false,
-      "rawSize": 6305773,
-      "compressedSize": 1274415
+      "rawSize": 6801043,
+      "compressedSize": 1331090
     }
   ]
 }
