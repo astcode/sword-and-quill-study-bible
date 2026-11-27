@@ -4,5 +4,54 @@
 <dict>
 	<key>CFBundleDisplayName</key>
 	<string>Sword &amp; Quill</string>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>com.swordandquillbible.study</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>swordandquill</string>
+			</array>
+		</dict>
+	</array>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Sword &amp; Quill Study Lesson</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.swordandquillbible.sqstudy</string>
+			</array>
+		</dict>
+	</array>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.json</string>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>Sword &amp; Quill Study Lesson</string>
+			<key>UTTypeIdentifier</key>
+			<string>com.swordandquillbible.sqstudy</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>sqstudy</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
 </dict>
 </plist>

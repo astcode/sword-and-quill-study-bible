@@ -20,6 +20,7 @@ public struct NotebookEditorSheet: View {
     @State private var noteType: NoteType = .sermon
     @State private var title: String = ""
     @State private var bodyText: String = ""
+    @StateObject private var richController = RichTextEditorController()
     @State private var drawing: PKDrawing = PKDrawing()
     @State private var layout: EditorLayout = .split
     @State private var selectedTool: WritingToolKind = .pen
@@ -213,17 +214,19 @@ public struct NotebookEditorSheet: View {
                 GeometryReader { geo in
                     HStack(spacing: 0) {
                         if layout == .typed || layout == .split {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("TYPED NOTES & OUTLINE")
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(.secondary)
-                                    .padding(.horizontal, 12)
-                                    .padding(.top, 8)
-                                TextEditor(text: $bodyText)
-                                    .font(.system(size: 16, design: .serif))
-                                    .padding(.horizontal, 8)
+                            VStack(alignment: .leading, spacing: 0) {
+                                RichFormattingToolbar(controller: richController, theme: viewModel.theme)
+                                Divider()
+                                RichOutlineTextView(
+                                    controller: richController,
+                                    plainText: $bodyText,
+                                    initialRTF: note.richBodyRTF,
+                                    initialPlainText: note.body,
+                                    theme: viewModel.theme
+                                )
+                                .background(viewModel.theme.canvasBackground)
                             }
-                            .frame(width: layout == .split ? geo.size.width * 0.42 : geo.size.width)
+                            .frame(width: layout == .split ? geo.size.width * 0.44 : geo.size.width)
                         }
 
                         if layout == .split {
@@ -274,7 +277,7 @@ public struct NotebookEditorSheet: View {
                                 }
                             }
                             .background(viewModel.theme.canvasBackground)
-                            .frame(width: layout == .split ? geo.size.width * 0.58 : geo.size.width)
+                            .frame(width: layout == .split ? geo.size.width * 0.56 : geo.size.width)
                         }
                     }
                 }
@@ -304,12 +307,16 @@ public struct NotebookEditorSheet: View {
             }
             .sheet(isPresented: $showInsertRefSheet) {
                 InsertReferenceSheet(viewModel: viewModel) { insertedText in
-                    if !bodyText.isEmpty && !bodyText.hasSuffix("\n") {
-                        bodyText += "\n"
-                    }
-                    bodyText += insertedText + "\n"
                     if layout == .handwriting {
                         layout = .split
+                    }
+                    if richController.textView != nil {
+                        richController.apply(.appendText(insertedText, isQuote: true))
+                    } else {
+                        if !bodyText.isEmpty && !bodyText.hasSuffix("\n") {
+                            bodyText += "\n"
+                        }
+                        bodyText += insertedText + "\n"
                     }
                 }
             }
@@ -362,6 +369,7 @@ public struct NotebookEditorSheet: View {
             title: title,
             linkedRefLabel: linked,
             bodyText: bodyText,
+            richBodyRTF: richController.exportRTF() ?? note.richBodyRTF,
             drawing: drawing,
             placedStickers: noteStickers,
             stickerLookup: lookup
@@ -420,12 +428,16 @@ public struct NotebookEditorSheet: View {
                 if joined.isEmpty {
                     self.ocrStatus = "No legible text recognized. Try larger or darker strokes."
                 } else {
-                    if !self.bodyText.isEmpty && !self.bodyText.hasSuffix("\n") {
-                        self.bodyText += "\n\n"
-                    }
-                    self.bodyText += joined
                     if self.layout == .handwriting {
                         self.layout = .split
+                    }
+                    if self.richController.textView != nil {
+                        self.richController.apply(.appendText(joined, isQuote: false))
+                    } else {
+                        if !self.bodyText.isEmpty && !self.bodyText.hasSuffix("\n") {
+                            self.bodyText += "\n\n"
+                        }
+                        self.bodyText += joined
                     }
                     self.ocrStatus = "Converted \(recognizedLines.count) line(s) into Typed Notes (original ink kept)."
                 }
@@ -457,11 +469,13 @@ public struct NotebookEditorSheet: View {
             }
             return nil
         }()
+        let rtfData = richController.exportRTF() ?? note.richBodyRTF
         viewModel.saveNote(
             id: note.id,
             type: noteType,
             title: finalTitle,
             body: bodyText,
+            richBodyRTF: rtfData,
             drawingData: blob,
             verse: linkedVerse
         )

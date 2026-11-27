@@ -23,7 +23,7 @@ public struct VerseActionPopover: View {
             VStack(spacing: 0) {
                 // Header bar (BLB style)
                 HStack {
-                    Text("\(viewModel.bookName(verse.bookId)) \(verse.chapter):\(verse.verse) (KJV)")
+                    Text("\(viewModel.bookName(verse.bookId)) \(verse.chapter):\(verse.verse)")
                         .font(.headline.weight(.semibold))
                         .foregroundStyle(.white)
                     Spacer()
@@ -44,8 +44,8 @@ public struct VerseActionPopover: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
                         // STUDY SECTION
-                        sectionHeader("STUDY (OPENS ON LEFT DESK)")
-                        actionRow("Cross-References (TSK)", icon: "arrow.triangle.branch", detail: "\(viewModel.crossRefsByVerse[verse.verse]?.count ?? 0)") {
+                        sectionHeader("STUDY")
+                        actionRow("Cross-References", icon: "arrow.triangle.branch", detail: "\(viewModel.crossRefsByVerse[verse.verse]?.count ?? 0)") {
                             withAnimation(.easeInOut(duration: 0.2)) {
                                 viewModel.openLeftStudy(tab: .crossRefs, for: verse)
                             }
@@ -55,22 +55,22 @@ public struct VerseActionPopover: View {
                                 viewModel.openLeftStudy(tab: .strongs, for: verse)
                             }
                         }
-                        actionRow("Dictionaries (1828 · Easton)", icon: "text.book.closed") {
+                        actionRow("Dictionaries", icon: "text.book.closed") {
                             withAnimation(.easeInOut(duration: 0.2)) {
                                 viewModel.openLeftStudy(tab: .dictionary, for: verse, dictionarySource: .webster1828)
                             }
                         }
-                        actionRow("Topical Study (Nave · Torrey)", icon: "books.vertical") {
+                        actionRow("Topical Study", icon: "books.vertical") {
                             withAnimation(.easeInOut(duration: 0.2)) {
                                 viewModel.openLeftStudy(tab: .dictionary, for: verse, dictionarySource: .nave)
                             }
                         }
-                        actionRow("Biblical Places & Map", icon: "map", detail: "\(viewModel.chapterPlaces.count)") {
+                        actionRow("Places & Map", icon: "map", detail: "\(viewModel.chapterPlaces.count)") {
                             withAnimation(.easeInOut(duration: 0.2)) {
                                 viewModel.openLeftStudy(tab: .places, for: verse)
                             }
                         }
-                        actionRow("Open in Parallel Bible", icon: "book.pages") {
+                        actionRow("Parallel Bible", icon: "book.pages") {
                             withAnimation(.easeInOut(duration: 0.2)) {
                                 viewModel.openLeftStudy(tab: .parallel, for: verse)
                             }

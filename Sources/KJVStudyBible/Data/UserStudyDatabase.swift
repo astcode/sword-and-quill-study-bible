@@ -201,14 +201,29 @@ public final class UserStudyDatabase: @unchecked Sendable {
             updated_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_study_margin_links_bc ON study_margin_links(book_id, chapter);
+
+        CREATE TABLE IF NOT EXISTS study_ink_annotations (
+            id TEXT PRIMARY KEY,
+            study_id TEXT NOT NULL,
+            book_id INTEGER NOT NULL,
+            chapter INTEGER NOT NULL,
+            pk_drawing_blob BLOB NOT NULL,
+            ref_font_size REAL NOT NULL,
+            verse_anchors_json TEXT,
+            updated_at TEXT NOT NULL,
+            UNIQUE(study_id, book_id, chapter)
+        );
         """
         sqlite3_exec(db, sql, nil, nil, nil)
         // Safe migrations for existing installs
         sqlite3_exec(db, "ALTER TABLE notes ADD COLUMN pk_drawing_blob BLOB;", nil, nil, nil)
+        sqlite3_exec(db, "ALTER TABLE notes ADD COLUMN rich_body_rtf BLOB;", nil, nil, nil)
         sqlite3_exec(db, "ALTER TABLE placed_stickers ADD COLUMN opacity REAL NOT NULL DEFAULT 1.0;", nil, nil, nil)
         sqlite3_exec(db, "ALTER TABLE sticker_library ADD COLUMN pk_drawing_blob BLOB;", nil, nil, nil)
         sqlite3_exec(db, "ALTER TABLE ink_annotations ADD COLUMN verse_anchors_json TEXT;", nil, nil, nil)
         sqlite3_exec(db, "ALTER TABLE nav_history ADD COLUMN duration_seconds INTEGER NOT NULL DEFAULT 0;", nil, nil, nil)
+        sqlite3_exec(db, "ALTER TABLE pinned_references ADD COLUMN study_id TEXT NOT NULL DEFAULT '';", nil, nil, nil)
+        sqlite3_exec(db, "ALTER TABLE journal_clips ADD COLUMN study_id TEXT NOT NULL DEFAULT '';", nil, nil, nil)
         collapseConsecutiveHistoryDuplicatesUnlocked()
         seedDefaultHighlightCategoriesUnlocked()
         seedDefaultStickersUnlocked()
@@ -240,18 +255,27 @@ public final class UserStudyDatabase: @unchecked Sendable {
         ISO8601DateFormatter().string(from: Date())
     }
 
-    // MARK: - Ink Persistence (with Verse-Anchored Reflow Metadata)
+    // MARK: - Ink Persistence (Everyday Bible + Tracing-Paper Study Layer)
 
-    public func loadChapterInk(bookId: Int, chapter: Int) -> (data: Data, anchors: ChapterInkAnchors?)? {
+    public func loadChapterInk(bookId: Int, chapter: Int, studyId: String = "") -> (data: Data, anchors: ChapterInkAnchors?)? {
         lock.lock()
         defer { lock.unlock() }
         guard let db else { return nil }
         var stmt: OpaquePointer?
-        let sql = "SELECT pk_drawing_blob, verse_anchors_json FROM ink_annotations WHERE book_id = ? AND chapter = ? LIMIT 1"
+        let isStudy = !studyId.isEmpty
+        let sql = isStudy
+            ? "SELECT pk_drawing_blob, verse_anchors_json FROM study_ink_annotations WHERE study_id = ? AND book_id = ? AND chapter = ? LIMIT 1"
+            : "SELECT pk_drawing_blob, verse_anchors_json FROM ink_annotations WHERE book_id = ? AND chapter = ? LIMIT 1"
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
         defer { sqlite3_finalize(stmt) }
-        sqlite3_bind_int(stmt, 1, Int32(bookId))
-        sqlite3_bind_int(stmt, 2, Int32(chapter))
+        if isStudy {
+            sqlite3_bind_text(stmt, 1, studyId, -1, SQLITE_TRANSIENT_USER)
+            sqlite3_bind_int(stmt, 2, Int32(bookId))
+            sqlite3_bind_int(stmt, 3, Int32(chapter))
+        } else {
+            sqlite3_bind_int(stmt, 1, Int32(bookId))
+            sqlite3_bind_int(stmt, 2, Int32(chapter))
+        }
         guard sqlite3_step(stmt) == SQLITE_ROW,
               let bytes = sqlite3_column_blob(stmt, 0) else { return nil }
         let len = Int(sqlite3_column_bytes(stmt, 0))
@@ -266,36 +290,66 @@ public final class UserStudyDatabase: @unchecked Sendable {
         return (blob, anchors)
     }
 
-    public func saveChapterInk(bookId: Int, chapter: Int, data: Data, fontSize: Double, anchors: ChapterInkAnchors? = nil) {
+    public func saveChapterInk(bookId: Int, chapter: Int, data: Data, fontSize: Double, anchors: ChapterInkAnchors? = nil, studyId: String = "") {
         lock.lock()
         defer { lock.unlock() }
         guard let db else { return }
         var stmt: OpaquePointer?
-        let sql = """
-        INSERT INTO ink_annotations(id, book_id, chapter, pk_drawing_blob, ref_font_size, verse_anchors_json, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(book_id, chapter) DO UPDATE SET
-            pk_drawing_blob = excluded.pk_drawing_blob,
-            ref_font_size = excluded.ref_font_size,
-            verse_anchors_json = excluded.verse_anchors_json,
-            updated_at = excluded.updated_at
-        """
+        let isStudy = !studyId.isEmpty
+        let sql: String
+        if isStudy {
+            sql = """
+            INSERT INTO study_ink_annotations(id, study_id, book_id, chapter, pk_drawing_blob, ref_font_size, verse_anchors_json, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(study_id, book_id, chapter) DO UPDATE SET
+                pk_drawing_blob = excluded.pk_drawing_blob,
+                ref_font_size = excluded.ref_font_size,
+                verse_anchors_json = excluded.verse_anchors_json,
+                updated_at = excluded.updated_at
+            """
+        } else {
+            sql = """
+            INSERT INTO ink_annotations(id, book_id, chapter, pk_drawing_blob, ref_font_size, verse_anchors_json, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(book_id, chapter) DO UPDATE SET
+                pk_drawing_blob = excluded.pk_drawing_blob,
+                ref_font_size = excluded.ref_font_size,
+                verse_anchors_json = excluded.verse_anchors_json,
+                updated_at = excluded.updated_at
+            """
+        }
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
         defer { sqlite3_finalize(stmt) }
-        let id = "ink-\(bookId)-\(chapter)"
-        sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT_USER)
-        sqlite3_bind_int(stmt, 2, Int32(bookId))
-        sqlite3_bind_int(stmt, 3, Int32(chapter))
-        _ = data.withUnsafeBytes { raw in
-            sqlite3_bind_blob(stmt, 4, raw.baseAddress, Int32(data.count), SQLITE_TRANSIENT_USER)
-        }
-        sqlite3_bind_double(stmt, 5, fontSize)
-        if let anchors, let jsonData = try? JSONEncoder().encode(anchors), let jsonStr = String(data: jsonData, encoding: .utf8) {
-            sqlite3_bind_text(stmt, 6, jsonStr, -1, SQLITE_TRANSIENT_USER)
+        if isStudy {
+            sqlite3_bind_text(stmt, 1, "sink-\(studyId)-\(bookId)-\(chapter)", -1, SQLITE_TRANSIENT_USER)
+            sqlite3_bind_text(stmt, 2, studyId, -1, SQLITE_TRANSIENT_USER)
+            sqlite3_bind_int(stmt, 3, Int32(bookId))
+            sqlite3_bind_int(stmt, 4, Int32(chapter))
+            _ = data.withUnsafeBytes { raw in
+                sqlite3_bind_blob(stmt, 5, raw.baseAddress, Int32(data.count), SQLITE_TRANSIENT_USER)
+            }
+            sqlite3_bind_double(stmt, 6, fontSize)
+            if let anchors, let jsonData = try? JSONEncoder().encode(anchors), let jsonStr = String(data: jsonData, encoding: .utf8) {
+                sqlite3_bind_text(stmt, 7, jsonStr, -1, SQLITE_TRANSIENT_USER)
+            } else {
+                sqlite3_bind_null(stmt, 7)
+            }
+            sqlite3_bind_text(stmt, 8, Self.isoNow(), -1, SQLITE_TRANSIENT_USER)
         } else {
-            sqlite3_bind_null(stmt, 6)
+            sqlite3_bind_text(stmt, 1, "ink-\(bookId)-\(chapter)", -1, SQLITE_TRANSIENT_USER)
+            sqlite3_bind_int(stmt, 2, Int32(bookId))
+            sqlite3_bind_int(stmt, 3, Int32(chapter))
+            _ = data.withUnsafeBytes { raw in
+                sqlite3_bind_blob(stmt, 4, raw.baseAddress, Int32(data.count), SQLITE_TRANSIENT_USER)
+            }
+            sqlite3_bind_double(stmt, 5, fontSize)
+            if let anchors, let jsonData = try? JSONEncoder().encode(anchors), let jsonStr = String(data: jsonData, encoding: .utf8) {
+                sqlite3_bind_text(stmt, 6, jsonStr, -1, SQLITE_TRANSIENT_USER)
+            } else {
+                sqlite3_bind_null(stmt, 6)
+            }
+            sqlite3_bind_text(stmt, 7, Self.isoNow(), -1, SQLITE_TRANSIENT_USER)
         }
-        sqlite3_bind_text(stmt, 7, Self.isoNow(), -1, SQLITE_TRANSIENT_USER)
         sqlite3_step(stmt)
     }
 
@@ -449,46 +503,53 @@ public final class UserStudyDatabase: @unchecked Sendable {
         defer { lock.unlock() }
         guard let db else { return [] }
         var stmt: OpaquePointer?
-        let sql = "SELECT id, note_type, title, body, pk_drawing_blob, book_id, chapter, verse, updated_at FROM notes ORDER BY updated_at DESC"
+        let sql = "SELECT id, note_type, title, body, rich_body_rtf, pk_drawing_blob, book_id, chapter, verse, updated_at FROM notes ORDER BY updated_at DESC"
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
         defer { sqlite3_finalize(stmt) }
         var out: [UserNote] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
-            var blobData: Data? = nil
+            var rtfData: Data? = nil
             if sqlite3_column_type(stmt, 4) == SQLITE_BLOB, let ptr = sqlite3_column_blob(stmt, 4) {
                 let len = Int(sqlite3_column_bytes(stmt, 4))
+                if len > 0 { rtfData = Data(bytes: ptr, count: len) }
+            }
+            var blobData: Data? = nil
+            if sqlite3_column_type(stmt, 5) == SQLITE_BLOB, let ptr = sqlite3_column_blob(stmt, 5) {
+                let len = Int(sqlite3_column_bytes(stmt, 5))
                 if len > 0 { blobData = Data(bytes: ptr, count: len) }
             }
-            let b: Int? = sqlite3_column_type(stmt, 5) == SQLITE_NULL ? nil : Int(sqlite3_column_int(stmt, 5))
-            let c: Int? = sqlite3_column_type(stmt, 6) == SQLITE_NULL ? nil : Int(sqlite3_column_int(stmt, 6))
-            let v: Int? = sqlite3_column_type(stmt, 7) == SQLITE_NULL ? nil : Int(sqlite3_column_int(stmt, 7))
+            let b: Int? = sqlite3_column_type(stmt, 6) == SQLITE_NULL ? nil : Int(sqlite3_column_int(stmt, 6))
+            let c: Int? = sqlite3_column_type(stmt, 7) == SQLITE_NULL ? nil : Int(sqlite3_column_int(stmt, 7))
+            let v: Int? = sqlite3_column_type(stmt, 8) == SQLITE_NULL ? nil : Int(sqlite3_column_int(stmt, 8))
             out.append(UserNote(
                 id: Self.colText(stmt, 0),
                 noteType: NoteType(rawValue: Self.colText(stmt, 1)) ?? .passage,
                 title: Self.colText(stmt, 2),
                 body: Self.colText(stmt, 3),
+                richBodyRTF: rtfData,
                 drawingData: blobData,
                 bookId: b,
                 chapter: c,
                 verse: v,
-                updatedAt: Self.colText(stmt, 8)
+                updatedAt: Self.colText(stmt, 9)
             ))
         }
         return out
     }
 
-    public func saveNote(id: String? = nil, noteType: NoteType, title: String, body: String, drawingData: Data? = nil, bookId: Int?, chapter: Int?, verse: Int?) {
+    public func saveNote(id: String? = nil, noteType: NoteType, title: String, body: String, richBodyRTF: Data? = nil, drawingData: Data? = nil, bookId: Int?, chapter: Int?, verse: Int?) {
         lock.lock()
         defer { lock.unlock() }
         guard let db else { return }
         var stmt: OpaquePointer?
         let sql = """
-        INSERT INTO notes(id, note_type, title, body, pk_drawing_blob, book_id, chapter, verse, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO notes(id, note_type, title, body, rich_body_rtf, pk_drawing_blob, book_id, chapter, verse, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             note_type = excluded.note_type,
             title = excluded.title,
             body = excluded.body,
+            rich_body_rtf = excluded.rich_body_rtf,
             pk_drawing_blob = excluded.pk_drawing_blob,
             book_id = excluded.book_id,
             chapter = excluded.chapter,
@@ -501,17 +562,24 @@ public final class UserStudyDatabase: @unchecked Sendable {
         sqlite3_bind_text(stmt, 2, noteType.rawValue, -1, SQLITE_TRANSIENT_USER)
         sqlite3_bind_text(stmt, 3, title, -1, SQLITE_TRANSIENT_USER)
         sqlite3_bind_text(stmt, 4, body, -1, SQLITE_TRANSIENT_USER)
-        if let drawingData, !drawingData.isEmpty {
-            _ = drawingData.withUnsafeBytes { raw in
-                sqlite3_bind_blob(stmt, 5, raw.baseAddress, Int32(drawingData.count), SQLITE_TRANSIENT_USER)
+        if let richBodyRTF, !richBodyRTF.isEmpty {
+            _ = richBodyRTF.withUnsafeBytes { raw in
+                sqlite3_bind_blob(stmt, 5, raw.baseAddress, Int32(richBodyRTF.count), SQLITE_TRANSIENT_USER)
             }
         } else {
             sqlite3_bind_null(stmt, 5)
         }
-        if let bookId { sqlite3_bind_int(stmt, 6, Int32(bookId)) } else { sqlite3_bind_null(stmt, 6) }
-        if let chapter { sqlite3_bind_int(stmt, 7, Int32(chapter)) } else { sqlite3_bind_null(stmt, 7) }
-        if let verse { sqlite3_bind_int(stmt, 8, Int32(verse)) } else { sqlite3_bind_null(stmt, 8) }
-        sqlite3_bind_text(stmt, 9, Self.isoNow(), -1, SQLITE_TRANSIENT_USER)
+        if let drawingData, !drawingData.isEmpty {
+            _ = drawingData.withUnsafeBytes { raw in
+                sqlite3_bind_blob(stmt, 6, raw.baseAddress, Int32(drawingData.count), SQLITE_TRANSIENT_USER)
+            }
+        } else {
+            sqlite3_bind_null(stmt, 6)
+        }
+        if let bookId { sqlite3_bind_int(stmt, 7, Int32(bookId)) } else { sqlite3_bind_null(stmt, 7) }
+        if let chapter { sqlite3_bind_int(stmt, 8, Int32(chapter)) } else { sqlite3_bind_null(stmt, 8) }
+        if let verse { sqlite3_bind_int(stmt, 9, Int32(verse)) } else { sqlite3_bind_null(stmt, 9) }
+        sqlite3_bind_text(stmt, 10, Self.isoNow(), -1, SQLITE_TRANSIENT_USER)
         sqlite3_step(stmt)
     }
 
@@ -555,9 +623,9 @@ public final class UserStudyDatabase: @unchecked Sendable {
         sqlite3_step(stmt)
     }
 
-    // MARK: - Pinned Reference Chips
+    // MARK: - Pinned Reference Chips (Scoped by study_id; '' = Everyday Bible)
 
-    public func pinnedReferences(bookId: Int, chapter: Int) -> [PinnedReference] {
+    public func pinnedReferences(bookId: Int, chapter: Int, studyId: String = "") -> [PinnedReference] {
         lock.lock()
         defer { lock.unlock() }
         guard let db else { return [] }
@@ -565,13 +633,14 @@ public final class UserStudyDatabase: @unchecked Sendable {
         let sql = """
             SELECT id, book_id, chapter, target_book_id, target_chapter, target_verse_start, target_verse_end, label, pos_x, pos_y, updated_at
             FROM pinned_references
-            WHERE book_id = ? AND chapter = ?
+            WHERE book_id = ? AND chapter = ? AND study_id = ?
             ORDER BY updated_at ASC
         """
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
         defer { sqlite3_finalize(stmt) }
         sqlite3_bind_int(stmt, 1, Int32(bookId))
         sqlite3_bind_int(stmt, 2, Int32(chapter))
+        sqlite3_bind_text(stmt, 3, studyId, -1, SQLITE_TRANSIENT_USER)
         var out: [PinnedReference] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
             out.append(PinnedReference(
@@ -591,14 +660,14 @@ public final class UserStudyDatabase: @unchecked Sendable {
         return out
     }
 
-    public func upsertPinnedReference(_ pin: PinnedReference) {
+    public func upsertPinnedReference(_ pin: PinnedReference, studyId: String = "") {
         lock.lock()
         defer { lock.unlock() }
         guard let db else { return }
         var stmt: OpaquePointer?
         let sql = """
-        INSERT INTO pinned_references(id, book_id, chapter, target_book_id, target_chapter, target_verse_start, target_verse_end, label, pos_x, pos_y, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO pinned_references(id, book_id, chapter, target_book_id, target_chapter, target_verse_start, target_verse_end, label, pos_x, pos_y, updated_at, study_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             pos_x = excluded.pos_x,
             pos_y = excluded.pos_y,
@@ -618,6 +687,7 @@ public final class UserStudyDatabase: @unchecked Sendable {
         sqlite3_bind_double(stmt, 9, pin.posX)
         sqlite3_bind_double(stmt, 10, pin.posY)
         sqlite3_bind_text(stmt, 11, Self.isoNow(), -1, SQLITE_TRANSIENT_USER)
+        sqlite3_bind_text(stmt, 12, studyId, -1, SQLITE_TRANSIENT_USER)
         sqlite3_step(stmt)
     }
 
@@ -633,9 +703,9 @@ public final class UserStudyDatabase: @unchecked Sendable {
         sqlite3_step(stmt)
     }
 
-    // MARK: - Journal Clip Cards (Movable Excerpts + User Notes)
+    // MARK: - Journal Clip Cards (Scoped by study_id; '' = Everyday Bible)
 
-    public func journalClips(bookId: Int, chapter: Int) -> [JournalClipCard] {
+    public func journalClips(bookId: Int, chapter: Int, studyId: String = "") -> [JournalClipCard] {
         lock.lock()
         defer { lock.unlock() }
         guard let db else { return [] }
@@ -643,13 +713,14 @@ public final class UserStudyDatabase: @unchecked Sendable {
         let sql = """
             SELECT id, book_id, chapter, source_label, excerpt, user_note, pos_x, pos_y, updated_at
             FROM journal_clips
-            WHERE book_id = ? AND chapter = ?
+            WHERE book_id = ? AND chapter = ? AND study_id = ?
             ORDER BY updated_at ASC
         """
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
         defer { sqlite3_finalize(stmt) }
         sqlite3_bind_int(stmt, 1, Int32(bookId))
         sqlite3_bind_int(stmt, 2, Int32(chapter))
+        sqlite3_bind_text(stmt, 3, studyId, -1, SQLITE_TRANSIENT_USER)
         var out: [JournalClipCard] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
             out.append(JournalClipCard(
@@ -667,14 +738,14 @@ public final class UserStudyDatabase: @unchecked Sendable {
         return out
     }
 
-    public func upsertJournalClip(_ clip: JournalClipCard) {
+    public func upsertJournalClip(_ clip: JournalClipCard, studyId: String = "") {
         lock.lock()
         defer { lock.unlock() }
         guard let db else { return }
         var stmt: OpaquePointer?
         let sql = """
-        INSERT INTO journal_clips(id, book_id, chapter, source_label, excerpt, user_note, pos_x, pos_y, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO journal_clips(id, book_id, chapter, source_label, excerpt, user_note, pos_x, pos_y, updated_at, study_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             source_label = excluded.source_label,
             excerpt = excluded.excerpt,
@@ -694,6 +765,7 @@ public final class UserStudyDatabase: @unchecked Sendable {
         sqlite3_bind_double(stmt, 7, clip.posX)
         sqlite3_bind_double(stmt, 8, clip.posY)
         sqlite3_bind_text(stmt, 9, Self.isoNow(), -1, SQLITE_TRANSIENT_USER)
+        sqlite3_bind_text(stmt, 10, studyId, -1, SQLITE_TRANSIENT_USER)
         sqlite3_step(stmt)
     }
 
@@ -1142,13 +1214,19 @@ public final class UserStudyDatabase: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         guard let db else { return }
-        for table in ["study_trail_entries", "study_margin_links"] {
+        for table in ["study_trail_entries", "study_margin_links", "study_ink_annotations", "pinned_references", "journal_clips"] {
             var s: OpaquePointer?
             if sqlite3_prepare_v2(db, "DELETE FROM \(table) WHERE study_id = ?", -1, &s, nil) == SQLITE_OK {
                 sqlite3_bind_text(s, 1, id, -1, SQLITE_TRANSIENT_USER)
                 sqlite3_step(s)
                 sqlite3_finalize(s)
             }
+        }
+        var stStmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, "DELETE FROM placed_stickers WHERE target_type = 'study_chapter' AND target_key LIKE ?", -1, &stStmt, nil) == SQLITE_OK {
+            sqlite3_bind_text(stStmt, 1, "\(id)-%", -1, SQLITE_TRANSIENT_USER)
+            sqlite3_step(stStmt)
+            sqlite3_finalize(stStmt)
         }
         var stmt: OpaquePointer?
         if sqlite3_prepare_v2(db, "DELETE FROM study_sessions WHERE id = ?", -1, &stmt, nil) == SQLITE_OK {
@@ -1274,6 +1352,40 @@ public final class UserStudyDatabase: @unchecked Sendable {
             sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT_USER)
             sqlite3_step(stmt)
         }
+    }
+
+    public func studyMarginLinks(studyId: String) -> [StudyMarginLink] {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let db else { return [] }
+        var stmt: OpaquePointer?
+        let sql = """
+            SELECT l.id, l.study_id, COALESCE(s.name, 'Study'), l.book_id, l.chapter, l.verse, l.note_text, l.pos_x, l.pos_y, l.updated_at
+            FROM study_margin_links l
+            LEFT JOIN study_sessions s ON s.id = l.study_id
+            WHERE l.study_id = ?
+            ORDER BY l.updated_at ASC
+        """
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, studyId, -1, SQLITE_TRANSIENT_USER)
+        var out: [StudyMarginLink] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let v: Int? = sqlite3_column_type(stmt, 5) == SQLITE_NULL ? nil : Int(sqlite3_column_int(stmt, 5))
+            out.append(StudyMarginLink(
+                id: Self.colText(stmt, 0),
+                studyId: Self.colText(stmt, 1),
+                studyName: Self.colText(stmt, 2),
+                bookId: Int(sqlite3_column_int(stmt, 3)),
+                chapter: Int(sqlite3_column_int(stmt, 4)),
+                verse: v,
+                noteText: Self.colText(stmt, 6),
+                posX: sqlite3_column_double(stmt, 7),
+                posY: sqlite3_column_double(stmt, 8),
+                updatedAt: Self.colText(stmt, 9)
+            ))
+        }
+        return out
     }
 
     public func studyMarginLinks(bookId: Int, chapter: Int) -> [StudyMarginLink] {

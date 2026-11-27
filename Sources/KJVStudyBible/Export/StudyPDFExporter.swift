@@ -250,6 +250,7 @@ public enum StudyPDFExporter {
         title: String,
         linkedRefLabel: String?,
         bodyText: String,
+        richBodyRTF: Data? = nil,
         drawing: PKDrawing,
         placedStickers: [PlacedSticker],
         stickerLookup: [String: StickerItem]
@@ -303,31 +304,55 @@ public enum StudyPDFExporter {
                 ctx.cgContext.strokePath()
                 y += 14
 
-                // Paginated Typed Notes
-                let trimmedBody = bodyText.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmedBody.isEmpty {
-                    let paragraphs = trimmedBody.components(separatedBy: "\n")
-                    let pStyle = NSMutableParagraphStyle()
-                    pStyle.lineSpacing = 4
-                    let bodyAttrs: [NSAttributedString.Key: Any] = [
-                        .font: UIFont(name: "Georgia", size: 12) ?? UIFont.systemFont(ofSize: 12),
-                        .foregroundColor: UIColor(red: 0.16, green: 0.13, blue: 0.10, alpha: 1.0),
-                        .paragraphStyle: pStyle
-                    ]
-                    for para in paragraphs {
-                        let line = para.isEmpty ? " " : para
-                        let attr = NSAttributedString(string: line, attributes: bodyAttrs)
-                        let h = ceil(attr.boundingRect(with: CGSize(width: printableW, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil).height) + 4
+                // Paginated Typed / WYSIWYG Rich Notes
+                if let rtf = richBodyRTF,
+                   let loaded = try? NSMutableAttributedString(data: rtf, options: [.documentType: NSAttributedString.DocumentType.rtf], documentAttributes: nil),
+                   loaded.length > 0 {
+                    // Normalize ink color for crisp white paper printing while keeping headings/bold/italic/underline/indents
+                    loaded.addAttribute(.foregroundColor, value: UIColor(red: 0.16, green: 0.13, blue: 0.10, alpha: 1.0), range: NSRange(location: 0, length: loaded.length))
+                    let fullStr = loaded.string as NSString
+                    var loc = 0
+                    while loc < fullStr.length {
+                        let lineRange = fullStr.lineRange(for: NSRange(location: loc, length: 0))
+                        let sub = loaded.attributedSubstring(from: lineRange)
+                        let h = ceil(sub.boundingRect(with: CGSize(width: printableW, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil).height) + 4
                         if y + h > pageRect.height - marginBottom {
                             pageIndex += 1
                             ctx.beginPage()
                             drawPageFooter(ctx.cgContext, title: "\(noteType.rawValue) · \(titleStr)", pageNumber: pageIndex)
                             y = marginTop
                         }
-                        attr.draw(in: CGRect(x: marginX, y: y, width: printableW, height: h))
+                        sub.draw(in: CGRect(x: marginX, y: y, width: printableW, height: h))
                         y += h
+                        loc = NSMaxRange(lineRange)
                     }
                     y += 16
+                } else {
+                    let trimmedBody = bodyText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmedBody.isEmpty {
+                        let paragraphs = trimmedBody.components(separatedBy: "\n")
+                        let pStyle = NSMutableParagraphStyle()
+                        pStyle.lineSpacing = 4
+                        let bodyAttrs: [NSAttributedString.Key: Any] = [
+                            .font: UIFont(name: "Georgia", size: 12) ?? UIFont.systemFont(ofSize: 12),
+                            .foregroundColor: UIColor(red: 0.16, green: 0.13, blue: 0.10, alpha: 1.0),
+                            .paragraphStyle: pStyle
+                        ]
+                        for para in paragraphs {
+                            let line = para.isEmpty ? " " : para
+                            let attr = NSAttributedString(string: line, attributes: bodyAttrs)
+                            let h = ceil(attr.boundingRect(with: CGSize(width: printableW, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil).height) + 4
+                            if y + h > pageRect.height - marginBottom {
+                                pageIndex += 1
+                                ctx.beginPage()
+                                drawPageFooter(ctx.cgContext, title: "\(noteType.rawValue) · \(titleStr)", pageNumber: pageIndex)
+                                y = marginTop
+                            }
+                            attr.draw(in: CGRect(x: marginX, y: y, width: printableW, height: h))
+                            y += h
+                        }
+                        y += 16
+                    }
                 }
 
                 // Handwritten Canvas + Placed Notebook Stickers
@@ -396,6 +421,120 @@ public enum StudyPDFExporter {
                             drawPageFooter(ctx.cgContext, title: "\(noteType.rawValue) · \(titleStr)", pageNumber: pageIndex)
                             y = marginTop
                         }
+                    }
+                }
+            }
+            return dest
+        } catch {
+            return nil
+        }
+    }
+
+    // MARK: - 3. Printable Study Trail Classroom Handout PDF
+
+    public static func exportStudyTrailHandout(
+        study: StudySession,
+        author: String?,
+        startLocationLabel: String,
+        entries: [StudyTrailEntry],
+        marginLinks: [StudyMarginLink],
+        bookNameLookup: (Int) -> String
+    ) -> URL? {
+        let safe = study.name
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: " ", with: "-")
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+        let dest = FileManager.default.temporaryDirectory.appendingPathComponent("SwordAndQuill-Handout-\(safe.isEmpty ? "Study" : safe).pdf")
+        try? FileManager.default.removeItem(at: dest)
+
+        let printableW = pageRect.width - marginX * 2
+        let format = UIGraphicsPDFRendererFormat()
+        format.documentInfo = [
+            kCGPDFContextCreator as String: "Sword & Quill Study Bible (www.swordandquillbible.com)",
+            kCGPDFContextTitle as String: "\(study.name) — Study Handout"
+        ]
+        let renderer = UIGraphicsPDFRenderer(bounds: pageRect, format: format)
+        let dateStr = DateFormatter.localizedString(from: Date(), dateStyle: .medium, timeStyle: .none)
+
+        do {
+            try renderer.writePDF(to: dest) { ctx in
+                var pageIndex = 1
+                ctx.beginPage()
+                drawPageFooter(ctx.cgContext, title: "\(study.name) · Sword & Quill Study Bible · swordandquillbible.com", pageNumber: pageIndex)
+                var y = marginTop
+
+                let subtitle = (author?.isEmpty == false)
+                    ? "STUDY HANDOUT  ·  BY \(author!.uppercased())  ·  \(dateStr)"
+                    : "STUDY HANDOUT  ·  \(dateStr)"
+                (subtitle as NSString).draw(at: CGPoint(x: marginX, y: y), withAttributes: [
+                    .font: UIFont.systemFont(ofSize: 9, weight: .bold),
+                    .foregroundColor: UIColor(red: 0.18, green: 0.38, blue: 0.62, alpha: 1.0)
+                ])
+                y += 16
+
+                let titleAttr = NSAttributedString(string: study.name, attributes: [
+                    .font: UIFont(name: "Georgia-Bold", size: 22) ?? UIFont.boldSystemFont(ofSize: 22),
+                    .foregroundColor: UIColor(red: 0.16, green: 0.13, blue: 0.10, alpha: 1.0)
+                ])
+                let titleH = ceil(titleAttr.boundingRect(with: CGSize(width: printableW, height: 100), options: [.usesLineFragmentOrigin], context: nil).height)
+                titleAttr.draw(in: CGRect(x: marginX, y: y, width: printableW, height: titleH))
+                y += titleH + 4
+
+                ("Starting Passage: \(startLocationLabel)" as NSString).draw(at: CGPoint(x: marginX, y: y), withAttributes: [
+                    .font: UIFont(name: "Georgia-Italic", size: 11.5) ?? UIFont.italicSystemFont(ofSize: 11.5),
+                    .foregroundColor: UIColor.darkGray
+                ])
+                y += 20
+
+                if !study.summaryNote.isEmpty {
+                    let sumAttr = makeNoteParagraph(heading: "Study Overview", body: study.summaryNote)
+                    let sh = ceil(sumAttr.boundingRect(with: CGSize(width: printableW, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil).height) + 10
+                    sumAttr.draw(in: CGRect(x: marginX, y: y, width: printableW, height: sh))
+                    y += sh + 6
+                }
+
+                ctx.cgContext.setStrokeColor(UIColor(white: 0.78, alpha: 1.0).cgColor)
+                ctx.cgContext.setLineWidth(0.75)
+                ctx.cgContext.move(to: CGPoint(x: marginX, y: y))
+                ctx.cgContext.addLine(to: CGPoint(x: pageRect.width - marginX, y: y))
+                ctx.cgContext.strokePath()
+                y += 14
+
+                func ensureSpace(_ needed: CGFloat) {
+                    if y + needed > pageRect.height - marginBottom {
+                        pageIndex += 1
+                        ctx.beginPage()
+                        drawPageFooter(ctx.cgContext, title: "\(study.name) · Sword & Quill Study Bible · swordandquillbible.com", pageNumber: pageIndex)
+                        y = marginTop
+                    }
+                }
+
+                drawSectionHeader("Study Trail (\(entries.count) Items)", at: CGPoint(x: marginX, y: y))
+                y += 22
+
+                for (idx, entry) in entries.reversed().enumerated() {
+                    let heading = "\(idx + 1). [\(entry.kind.rawValue)]  \(entry.title)"
+                    let body = entry.detail.isEmpty ? " " : entry.detail
+                    let attr = makeNoteParagraph(heading: heading, body: body)
+                    let h = ceil(attr.boundingRect(with: CGSize(width: printableW, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil).height) + 6
+                    ensureSpace(h)
+                    attr.draw(in: CGRect(x: marginX, y: y, width: printableW, height: h))
+                    y += h + 4
+                }
+
+                if !marginLinks.isEmpty {
+                    ensureSpace(44)
+                    y += 10
+                    drawSectionHeader("Key Bible Margin Notes", at: CGPoint(x: marginX, y: y))
+                    y += 22
+                    for link in marginLinks {
+                        let ref = "\(bookNameLookup(link.bookId)) \(link.chapter)\(link.verse != nil ? ":\(link.verse!)" : "")"
+                        let attr = makeNoteParagraph(heading: ref, body: link.noteText.isEmpty ? "(Linked to this study)" : link.noteText)
+                        let h = ceil(attr.boundingRect(with: CGSize(width: printableW, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil).height) + 8
+                        ensureSpace(h)
+                        attr.draw(in: CGRect(x: marginX, y: y, width: printableW, height: h))
+                        y += h + 4
                     }
                 }
             }

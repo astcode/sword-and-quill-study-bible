@@ -213,17 +213,19 @@ public struct UserNote: Identifiable, Hashable, Sendable {
     public let noteType: NoteType
     public let title: String
     public let body: String
+    public let richBodyRTF: Data?
     public let drawingData: Data?
     public let bookId: Int?
     public let chapter: Int?
     public let verse: Int?
     public let updatedAt: String
 
-    public init(id: String, noteType: NoteType, title: String, body: String, drawingData: Data? = nil, bookId: Int?, chapter: Int?, verse: Int?, updatedAt: String) {
+    public init(id: String, noteType: NoteType, title: String, body: String, richBodyRTF: Data? = nil, drawingData: Data? = nil, bookId: Int?, chapter: Int?, verse: Int?, updatedAt: String) {
         self.id = id
         self.noteType = noteType
         self.title = title
         self.body = body
+        self.richBodyRTF = richBodyRTF
         self.drawingData = drawingData
         self.bookId = bookId
         self.chapter = chapter

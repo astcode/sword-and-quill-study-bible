@@ -172,6 +172,33 @@ public struct StudyDashboardSheet: View {
                     .background(viewModel.theme.panelBackground)
                     .clipShape(RoundedRectangle(cornerRadius: 14))
                     .overlay(RoundedRectangle(cornerRadius: 14).stroke(viewModel.theme.dividerColor, lineWidth: 1))
+
+                    // Sword & Quill Pro & Support the Builder Card
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "heart.text.square.fill")
+                                .font(.title3)
+                                .foregroundStyle(.orange)
+                            Text("SUPPORT SWORD & QUILL")
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text("PRO ACTIVE (DEV)")
+                                .font(.system(size: 9.5, weight: .bold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 2)
+                                .background(Color.orange)
+                                .clipShape(Capsule())
+                        }
+                        Text("God's Word, Apple Pencil journaling, and receiving shared lessons are always free and ad-free. Classroom Sharing (.sqstudy packages, Classroom QR Codes, & Printable Handout PDFs) and optional App Store Tips help support ongoing independent development of Sword & Quill.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(14)
+                    .background(viewModel.theme.panelBackground)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(viewModel.theme.dividerColor, lineWidth: 1))
                 }
                 .padding(16)
             }

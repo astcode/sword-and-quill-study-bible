@@ -189,6 +189,19 @@ public struct StudyTrailSheet: View {
                             .tint(viewModel.theme.accentBlue)
 
                             Button {
+                                dismiss()
+                                viewModel.sharingStudy = study
+                            } label: {
+                                Label("Share / QR", systemImage: "qrcode")
+                                    .font(.caption.weight(.semibold))
+                                    .lineLimit(1)
+                            }
+                            .fixedSize(horizontal: true, vertical: false)
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                            .tint(.orange)
+
+                            Button {
                                 copyStudyTrailSummary(study)
                             } label: {
                                 Label("Copy Trail", systemImage: "doc.on.doc")

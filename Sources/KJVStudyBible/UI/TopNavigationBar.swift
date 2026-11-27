@@ -202,6 +202,12 @@ public struct TopNavigationBar: View {
                         Label("New Study...", systemImage: "plus.circle.fill")
                     }
 
+                    Button {
+                        viewModel.showImportStudyFilePicker = true
+                    } label: {
+                        Label("Import Study (.sqstudy)...", systemImage: "tray.and.arrow.down")
+                    }
+
                     if let active = viewModel.activeStudy {
                         Divider()
                         Section("Active: \(active.name)") {
@@ -209,6 +215,11 @@ public struct TopNavigationBar: View {
                                 viewModel.showStudyTrailSheet = true
                             } label: {
                                 Label("View Study Trail (\(viewModel.activeStudyTrail.count))", systemImage: "list.bullet.rectangle")
+                            }
+                            Button {
+                                viewModel.sharingStudy = active
+                            } label: {
+                                Label("Share Lesson / QR Code (Pro)", systemImage: "qrcode")
                             }
                             Button {
                                 viewModel.showAddStudyLinkSheet = true

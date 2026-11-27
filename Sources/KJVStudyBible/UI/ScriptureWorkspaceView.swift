@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 public struct ScriptureWorkspaceView: View {
     @ObservedObject var viewModel: BibleWorkspaceViewModel
@@ -12,6 +13,84 @@ public struct ScriptureWorkspaceView: View {
 
             VStack(spacing: 0) {
                 TopNavigationBar(viewModel: viewModel)
+
+                // Slim Active Study Layer Banner (makes it unmistakable when writing on a Tracing-Paper Study Layer)
+                if let activeStudy = viewModel.activeStudy {
+                    HStack(spacing: 10) {
+                        Circle()
+                            .fill(Color.orange)
+                            .frame(width: 8, height: 8)
+                        Text("Study Layer:")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.white.opacity(0.85))
+                        Text(activeStudy.name)
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+
+                        Spacer()
+
+                        Button {
+                            viewModel.showStudyTrailSheet = true
+                        } label: {
+                            Label("Trail (\(viewModel.activeStudyTrail.count))", systemImage: "list.bullet.rectangle")
+                                .font(.caption2.weight(.semibold))
+                                .lineLimit(1)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color.white.opacity(0.18))
+                                .foregroundStyle(.white)
+                                .clipShape(Capsule())
+                        }
+                        .fixedSize(horizontal: true, vertical: false)
+
+                        Button {
+                            viewModel.sharingStudy = activeStudy
+                        } label: {
+                            Label("Share", systemImage: "qrcode")
+                                .font(.caption2.weight(.semibold))
+                                .lineLimit(1)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color.white.opacity(0.18))
+                                .foregroundStyle(.white)
+                                .clipShape(Capsule())
+                        }
+                        .fixedSize(horizontal: true, vertical: false)
+
+                        Button {
+                            viewModel.showAddStudyLinkSheet = true
+                        } label: {
+                            Label("Pin to Bible", systemImage: "pin.fill")
+                                .font(.caption2.weight(.semibold))
+                                .lineLimit(1)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color.orange)
+                                .foregroundStyle(.white)
+                                .clipShape(Capsule())
+                        }
+                        .fixedSize(horizontal: true, vertical: false)
+
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                viewModel.exitActiveStudy()
+                            }
+                        } label: {
+                            Text("Exit")
+                                .font(.caption2.weight(.bold))
+                                .padding(.horizontal, 9)
+                                .padding(.vertical, 4)
+                                .background(Color.white.opacity(0.24))
+                                .foregroundStyle(.white)
+                                .clipShape(Capsule())
+                        }
+                        .fixedSize(horizontal: true, vertical: false)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                    .background(viewModel.theme.accentBlue)
+                }
 
                 ZStack(alignment: .trailing) {
                     GeometryReader { geo in
@@ -144,6 +223,21 @@ public struct ScriptureWorkspaceView: View {
         }
         .sheet(item: $viewModel.editingStudyMarginLink) { link in
             StudyMarginLinkEditorSheet(viewModel: viewModel, existingLink: link)
+        }
+        .sheet(item: $viewModel.sharingStudy) { study in
+            StudyShareSheet(viewModel: viewModel, study: study)
+        }
+        .sheet(item: $viewModel.incomingStudyPackage) { pkg in
+            ImportStudyPreviewSheet(viewModel: viewModel, package: pkg)
+        }
+        .fileImporter(
+            isPresented: $viewModel.showImportStudyFilePicker,
+            allowedContentTypes: [.data, .json, .item],
+            allowsMultipleSelection: false
+        ) { result in
+            if case .success(let urls) = result, let url = urls.first {
+                viewModel.handleIncomingURL(url)
+            }
         }
     }
 
@@ -441,6 +535,7 @@ public struct ScriptureWorkspaceView: View {
             // Verses
             ForEach(viewModel.verses) { verse in
                 let highlight = viewModel.chapterHighlights[verse.verse]
+                let isSelectedVerse = (viewModel.popoverVerse?.id == verse.id) || (viewModel.studyVerse?.id == verse.id && viewModel.showReferencePanel)
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
                     if viewModel.showVerseNumbers {
                         let hasLinkedNote = !(viewModel.chapterNotesByVerse[verse.verse] ?? []).isEmpty
@@ -452,7 +547,7 @@ public struct ScriptureWorkspaceView: View {
                             }
                             Text("\(verse.verse)")
                                 .font(.system(size: max(10, viewModel.fontSize * 0.56), weight: .regular, design: .rounded))
-                                .foregroundStyle(viewModel.theme.secondaryText.opacity(0.8))
+                                .foregroundStyle(isSelectedVerse ? viewModel.theme.accentBlue : viewModel.theme.secondaryText.opacity(0.8))
                                 .lineLimit(1)
                                 .fixedSize(horizontal: true, vertical: false)
                         }
@@ -466,14 +561,19 @@ public struct ScriptureWorkspaceView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 6)
                 .background(
-                    Group {
+                    ZStack {
                         if let hl = highlight {
                             RoundedRectangle(cornerRadius: 6)
                                 .fill(Color(uiColor: UIColor(hex: hl.colorHex) ?? .systemYellow).opacity(0.24))
                                 .padding(.horizontal, 10)
-                        } else if viewModel.studyVerse?.id == verse.id && viewModel.showStudyPanel {
-                            RoundedRectangle(cornerRadius: 6)
-                                .fill(viewModel.theme.accentBlue.opacity(0.10))
+                        }
+                        if isSelectedVerse {
+                            RoundedRectangle(cornerRadius: 7)
+                                .fill(viewModel.theme.accentBlue.opacity(highlight == nil ? 0.08 : 0.05))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 7)
+                                        .stroke(viewModel.theme.accentBlue.opacity(0.35), lineWidth: 1)
+                                )
                                 .padding(.horizontal, 10)
                         }
                     }

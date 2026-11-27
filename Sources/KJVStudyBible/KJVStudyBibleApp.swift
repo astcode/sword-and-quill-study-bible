@@ -7,6 +7,9 @@ struct KJVStudyBibleApp: App {
     var body: some Scene {
         WindowGroup {
             ScriptureWorkspaceView(viewModel: viewModel)
+                .onOpenURL { url in
+                    viewModel.handleIncomingURL(url)
+                }
         }
     }
 }

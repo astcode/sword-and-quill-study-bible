@@ -50,6 +50,10 @@ public final class BibleWorkspaceViewModel: ObservableObject {
     @Published public var showStudyTrailSheet: Bool = false
     @Published public var editingStudyMarginLink: StudyMarginLink? = nil
     @Published public var showAddStudyLinkSheet: Bool = false
+    @Published public var sharingStudy: StudySession? = nil
+    @Published public var incomingStudyPackage: StudySharePackage? = nil
+    @Published public var showImportStudyFilePicker: Bool = false
+    @Published public var teacherAuthorName: String = ""
     private var activeStudyPassageEntryId: String? = nil
 
     // Verse-Anchored Ink Reflow State
@@ -214,6 +218,40 @@ public final class BibleWorkspaceViewModel: ObservableObject {
         showToast("Reading history cleared")
     }
 
+    public var activeLayerStudyId: String {
+        activeStudy?.id ?? ""
+    }
+
+    private var activeStickerTargetType: String {
+        activeStudy == nil ? "chapter" : "study_chapter"
+    }
+
+    private var activeStickerTargetKey: String {
+        if let sid = activeStudy?.id {
+            return "\(sid)-\(currentBookId)-\(currentChapter)"
+        }
+        return "\(currentBookId)-\(currentChapter)"
+    }
+
+    public func reloadActiveChapterLayer() {
+        let sid = activeLayerStudyId
+        pinnedReferences = studyDB.pinnedReferences(bookId: currentBookId, chapter: currentChapter, studyId: sid)
+        journalClips = studyDB.journalClips(bookId: currentBookId, chapter: currentChapter, studyId: sid)
+        chapterStickers = studyDB.placedStickers(targetType: activeStickerTargetType, targetKey: activeStickerTargetKey)
+        chapterStudyLinks = studyDB.studyMarginLinks(bookId: currentBookId, chapter: currentChapter)
+        selectedChapterStickerId = nil
+
+        if let loaded = studyDB.loadChapterInk(bookId: currentBookId, chapter: currentChapter, studyId: sid),
+           let parsed = try? PKDrawing(data: loaded.data) {
+            chapterDrawing = parsed
+            savedInkAnchors = loaded.anchors
+        } else {
+            chapterDrawing = PKDrawing()
+            savedInkAnchors = nil
+        }
+        drawingRevision += 1
+    }
+
     public func navigate(to ref: VerseRef, pushHistory: Bool = true) {
         flushCurrentChapterTime()
         currentBookId = ref.bookId
@@ -225,22 +263,8 @@ public final class BibleWorkspaceViewModel: ObservableObject {
         chapterPlaces = referenceDB.placesForChapter(bookId: ref.bookId, chapter: ref.chapter)
         expandedReferenceVerses = []
         chapterHighlights = studyDB.highlights(bookId: ref.bookId, chapter: ref.chapter)
-        pinnedReferences = studyDB.pinnedReferences(bookId: ref.bookId, chapter: ref.chapter)
-        journalClips = studyDB.journalClips(bookId: ref.bookId, chapter: ref.chapter)
-        chapterStickers = studyDB.placedStickers(targetType: "chapter", targetKey: "\(ref.bookId)-\(ref.chapter)")
-        chapterStudyLinks = studyDB.studyMarginLinks(bookId: ref.bookId, chapter: ref.chapter)
-        selectedChapterStickerId = nil
-
-        if let loaded = studyDB.loadChapterInk(bookId: ref.bookId, chapter: ref.chapter),
-           let parsed = try? PKDrawing(data: loaded.data) {
-            chapterDrawing = parsed
-            savedInkAnchors = loaded.anchors
-        } else {
-            chapterDrawing = PKDrawing()
-            savedInkAnchors = nil
-        }
         currentVerseFrames = [:]
-        drawingRevision += 1
+        reloadActiveChapterLayer()
 
         if pushHistory {
             if historyIndex < historyStack.count - 1 {
@@ -436,8 +460,8 @@ public final class BibleWorkspaceViewModel: ObservableObject {
                 posY: existing.posY,
                 updatedAt: ISO8601DateFormatter().string(from: Date())
             )
-            studyDB.upsertJournalClip(updated)
-            journalClips = studyDB.journalClips(bookId: currentBookId, chapter: currentChapter)
+            studyDB.upsertJournalClip(updated, studyId: activeLayerStudyId)
+            journalClips = studyDB.journalClips(bookId: currentBookId, chapter: currentChapter, studyId: activeLayerStudyId)
             showToast("Updated journal clip")
         } else {
             let yOffset = 110.0 + Double(journalClips.count % 6) * 95.0
@@ -452,8 +476,9 @@ public final class BibleWorkspaceViewModel: ObservableObject {
                 posY: yOffset,
                 updatedAt: ISO8601DateFormatter().string(from: Date())
             )
-            studyDB.upsertJournalClip(card)
-            journalClips = studyDB.journalClips(bookId: currentBookId, chapter: currentChapter)
+            studyDB.upsertJournalClip(card, studyId: activeLayerStudyId)
+            journalClips = studyDB.journalClips(bookId: currentBookId, chapter: currentChapter, studyId: activeLayerStudyId)
+            recordStudyEvent(kind: .clip, title: sourceLabel, detail: trimmedNote.isEmpty ? String(trimmedExcerpt.prefix(100)) : trimmedNote, bookId: currentBookId, chapter: currentChapter)
             showToast("Added clip to journal")
         }
         activeClipDraft = nil
@@ -463,12 +488,12 @@ public final class BibleWorkspaceViewModel: ObservableObject {
         guard let idx = journalClips.firstIndex(where: { $0.id == id }) else { return }
         journalClips[idx].posX = max(16, Double(point.x))
         journalClips[idx].posY = max(16, Double(point.y))
-        studyDB.upsertJournalClip(journalClips[idx])
+        studyDB.upsertJournalClip(journalClips[idx], studyId: activeLayerStudyId)
     }
 
     public func removeJournalClip(id: String) {
         studyDB.deleteJournalClip(id: id)
-        journalClips = studyDB.journalClips(bookId: currentBookId, chapter: currentChapter)
+        journalClips = studyDB.journalClips(bookId: currentBookId, chapter: currentChapter, studyId: activeLayerStudyId)
         activeClipDraft = nil
         showToast("Removed journal clip")
     }
@@ -599,7 +624,7 @@ public final class BibleWorkspaceViewModel: ObservableObject {
         let anchors = makeCurrentInkAnchors()
         if let anchors { self.savedInkAnchors = anchors }
         let data = newDrawing.dataRepresentation()
-        studyDB.saveChapterInk(bookId: currentBookId, chapter: currentChapter, data: data, fontSize: fontSize, anchors: anchors)
+        studyDB.saveChapterInk(bookId: currentBookId, chapter: currentChapter, data: data, fontSize: fontSize, anchors: anchors, studyId: activeLayerStudyId)
     }
 
     public func updateLayoutForInkReflow(verseFrames: [Int: CGRect], scriptureWidth: CGFloat, canvasWidth: CGFloat) {
@@ -621,7 +646,8 @@ public final class BibleWorkspaceViewModel: ObservableObject {
                 chapter: currentChapter,
                 data: chapterDrawing.dataRepresentation(),
                 fontSize: fontSize,
-                anchors: currentAnchors
+                anchors: currentAnchors,
+                studyId: activeLayerStudyId
             )
             return
         }
@@ -700,7 +726,8 @@ public final class BibleWorkspaceViewModel: ObservableObject {
             chapter: currentChapter,
             data: updatedDrawing.dataRepresentation(),
             fontSize: fontSize,
-            anchors: currentAnchors
+            anchors: currentAnchors,
+            studyId: activeLayerStudyId
         )
     }
 
@@ -836,8 +863,8 @@ public final class BibleWorkspaceViewModel: ObservableObject {
             posY: posY,
             updatedAt: ISO8601DateFormatter().string(from: Date())
         )
-        studyDB.upsertPinnedReference(pin)
-        pinnedReferences = studyDB.pinnedReferences(bookId: currentBookId, chapter: currentChapter)
+        studyDB.upsertPinnedReference(pin, studyId: activeLayerStudyId)
+        pinnedReferences = studyDB.pinnedReferences(bookId: currentBookId, chapter: currentChapter, studyId: activeLayerStudyId)
         showToast("Pinned \(ref.displayRef) to journal")
     }
 
@@ -862,8 +889,8 @@ public final class BibleWorkspaceViewModel: ObservableObject {
             posY: Double(point.y),
             updatedAt: ISO8601DateFormatter().string(from: Date())
         )
-        studyDB.upsertPinnedReference(pin)
-        pinnedReferences = studyDB.pinnedReferences(bookId: currentBookId, chapter: currentChapter)
+        studyDB.upsertPinnedReference(pin, studyId: activeLayerStudyId)
+        pinnedReferences = studyDB.pinnedReferences(bookId: currentBookId, chapter: currentChapter, studyId: activeLayerStudyId)
         showToast("Dropped \(label) into journal")
     }
 
@@ -871,12 +898,12 @@ public final class BibleWorkspaceViewModel: ObservableObject {
         guard let idx = pinnedReferences.firstIndex(where: { $0.id == id }) else { return }
         pinnedReferences[idx].posX = max(24, Double(point.x))
         pinnedReferences[idx].posY = max(24, Double(point.y))
-        studyDB.upsertPinnedReference(pinnedReferences[idx])
+        studyDB.upsertPinnedReference(pinnedReferences[idx], studyId: activeLayerStudyId)
     }
 
     public func removePinnedReference(id: String) {
         studyDB.deletePinnedReference(id: id)
-        pinnedReferences = studyDB.pinnedReferences(bookId: currentBookId, chapter: currentChapter)
+        pinnedReferences = studyDB.pinnedReferences(bookId: currentBookId, chapter: currentChapter, studyId: activeLayerStudyId)
         showToast("Removed pinned reference")
     }
 
@@ -938,12 +965,13 @@ public final class BibleWorkspaceViewModel: ObservableObject {
         bookmarks = studyDB.allBookmarks()
     }
 
-    public func saveNote(id: String? = nil, type: NoteType, title: String, body: String, drawingData: Data? = nil, verse: Verse?) {
+    public func saveNote(id: String? = nil, type: NoteType, title: String, body: String, richBodyRTF: Data? = nil, drawingData: Data? = nil, verse: Verse?) {
         studyDB.saveNote(
             id: id,
             noteType: type,
             title: title,
             body: body,
+            richBodyRTF: richBodyRTF,
             drawingData: drawingData,
             bookId: verse?.bookId ?? currentBookId,
             chapter: verse?.chapter ?? currentChapter,
@@ -1115,8 +1143,10 @@ public final class BibleWorkspaceViewModel: ObservableObject {
             } else {
                 navigate(to: VerseRef(bookId: session.startBookId, chapter: session.startChapter, verse: session.startVerse), pushHistory: true)
             }
+        } else {
+            reloadActiveChapterLayer()
         }
-        showToast("Resumed Study: \"\(session.name)\"")
+        showToast("Study Layer: \"\(session.name)\"")
     }
 
     public func exitActiveStudy() {
@@ -1125,7 +1155,8 @@ public final class BibleWorkspaceViewModel: ObservableObject {
         activeStudyTrail = []
         activeStudyPassageEntryId = nil
         studyDB.setPreference("active_study_id", value: "")
-        showToast("Exited Study — back to everyday reading")
+        reloadActiveChapterLayer()
+        showToast("Back to Everyday Bible")
     }
 
     public func renameStudy(id: String, newName: String, summaryNote: String) {
@@ -1200,6 +1231,68 @@ public final class BibleWorkspaceViewModel: ObservableObject {
         showToast("Removed study link")
     }
 
+    // MARK: - Shareable Study Lessons (.sqstudy, Classroom QR Code, Clickable Links)
+
+    public func setTeacherAuthorName(_ name: String) {
+        teacherAuthorName = name
+        studyDB.setPreference("teacher_author_name", value: name)
+    }
+
+    public func handleIncomingURL(_ url: URL) {
+        if let pkg = StudyPackageCodec.decode(from: url) {
+            incomingStudyPackage = pkg
+        } else {
+            showToast("Could not read Study Lesson file or link")
+        }
+    }
+
+    public func importStudyPackage(_ package: StudySharePackage, includeMarginNotes: Bool) {
+        flushCurrentChapterTime()
+        let session = studyDB.createStudySession(
+            name: package.name,
+            startBookId: package.startBookId,
+            startChapter: package.startChapter,
+            startVerse: package.startVerse,
+            summaryNote: package.summary ?? ""
+        )
+        for item in package.entries {
+            let kind = StudyTrailKind(rawValue: item.k) ?? .passage
+            _ = studyDB.appendStudyTrailEntry(
+                studyId: session.id,
+                kind: kind,
+                title: item.t,
+                detail: item.d ?? "",
+                bookId: item.b,
+                chapter: item.c,
+                verse: item.v,
+                refKey: item.r
+            )
+        }
+        if includeMarginNotes, let marginNotes = package.marginNotes {
+            for (idx, mn) in marginNotes.enumerated() {
+                let link = StudyMarginLink(
+                    id: UUID().uuidString,
+                    studyId: session.id,
+                    studyName: session.name,
+                    bookId: mn.b,
+                    chapter: mn.c,
+                    verse: mn.v,
+                    noteText: mn.n,
+                    posX: 430.0 + Double(idx % 4) * 14.0,
+                    posY: 90.0 + Double(idx % 6) * 52.0,
+                    updatedAt: ISO8601DateFormatter().string(from: Date())
+                )
+                studyDB.upsertStudyMarginLink(link)
+            }
+        }
+        studySessions = studyDB.allStudySessions()
+        activeStudy = session
+        studyDB.setPreference("active_study_id", value: session.id)
+        activeStudyTrail = studyDB.studyTrailEntries(studyId: session.id)
+        navigate(to: VerseRef(bookId: session.startBookId, chapter: session.startChapter, verse: session.startVerse), pushHistory: true)
+        showToast("Imported Study \"\(session.name)\"")
+    }
+
     // MARK: - Stickers (Library + Chapter Placement)
 
     public func stickerItem(for id: String) -> StickerItem? {
@@ -1228,15 +1321,14 @@ public final class BibleWorkspaceViewModel: ObservableObject {
     }
 
     public func placeStickerOnChapter(_ item: StickerItem) {
-        let key = "\(currentBookId)-\(currentChapter)"
         let offsetIndex = Double(chapterStickers.count % 6)
         let startX: Double = showJournalPanel ? 420.0 + offsetIndex * 16.0 : 120.0 + offsetIndex * 16.0
         let startY: Double = 110.0 + offsetIndex * 28.0
         let defaultSize: Double = item.kind == .symbol ? 68.0 : 96.0
         let placed = studyDB.addPlacedSticker(
             stickerId: item.id,
-            targetType: "chapter",
-            targetKey: key,
+            targetType: activeStickerTargetType,
+            targetKey: activeStickerTargetKey,
             posX: startX,
             posY: startY,
             width: defaultSize,
@@ -1308,6 +1400,7 @@ public final class BibleWorkspaceViewModel: ObservableObject {
         if let sar = studyDB.getPreference("show_all_refs") { showAllReferencesExpanded = (sar == "1") }
         if let pb = studyDB.getPreference("parallel_book_id").flatMap(Int.init) { parallelBookId = pb }
         if let pc = studyDB.getPreference("parallel_chapter").flatMap(Int.init) { parallelChapter = pc }
+        if let ta = studyDB.getPreference("teacher_author_name") { teacherAuthorName = ta }
         syncModeFromPanels()
     }
 
