@@ -325,102 +325,26 @@ public struct ScriptureWorkspaceView: View {
                     }
                 }
 
-                // UNIFIED ZOOMABLE WRITING WORKSPACE: KJV Scripture + Journal Margin (swaps order in Left-Handed Mode!)
-                ZoomableCanvasScrollView(zoomScale: $viewModel.journalZoomScale, contentWidth: unifiedWidth) {
-                    ZStack(alignment: .topLeading) {
-                        HStack(alignment: .top, spacing: 0) {
-                            if !viewModel.showJournalPanel {
-                                Spacer(minLength: 0)
-                            }
-
-                            if isLeftHanded && viewModel.showJournalPanel {
-                                journalMarginColumn(width: journalWidth)
-                                dashedVerticalDivider
-                            }
-
-                            scriptureColumn(width: scriptureWidth)
-
-                            if !isLeftHanded && viewModel.showJournalPanel {
-                                dashedVerticalDivider
-                                journalMarginColumn(width: journalWidth)
-                            } else if !viewModel.showJournalPanel {
-                                Spacer(minLength: 0)
-                            }
-                        }
-
-                        // Unified Apple Pencil Canvas (hidden in Reading Mode unless toggled on; ink preserved!)
-                        if viewModel.shouldShowInkOverlay {
-                            UnifiedBibleCanvas(viewModel: viewModel) { tapPoint in
-                                handleFingerTapOnCanvas(tapPoint)
-                            }
-                            .frame(width: unifiedWidth)
-
-                            // Draggable Pinned Reference Chips — uses .offset() so hit-box is ONLY the tiny pill!
-                            ForEach(viewModel.pinnedReferences) { pin in
-                                DraggableReferenceChip(
-                                    pin: pin,
-                                    theme: viewModel.theme,
-                                    onTap: { viewModel.openPinnedReference(pin) },
-                                    onMove: { newPt in viewModel.movePinnedReference(id: pin.id, to: newPt) }
-                                )
-                            }
-
-                            // Draggable Movable Study Clip Cards (trimmed excerpts + editable personal notes!)
-                            ForEach(viewModel.journalClips) { clip in
-                                DraggableClipCard(
-                                    clip: clip,
-                                    theme: viewModel.theme,
-                                    onTap: { viewModel.startEditClip(clip) },
-                                    onMove: { newPt in viewModel.moveJournalClip(id: clip.id, to: newPt) }
-                                )
-                            }
-
-                            // Draggable Permanent Study Link + Margin Note Cards (links Bible ink back to a Study!)
-                            ForEach(viewModel.chapterStudyLinks) { link in
-                                DraggableStudyLinkCard(
-                                    link: link,
-                                    theme: viewModel.theme,
-                                    onTap: { viewModel.editingStudyMarginLink = link },
-                                    onMove: { newPt in
-                                        var next = link
-                                        next.posX = Double(newPt.x)
-                                        next.posY = Double(newPt.y)
-                                        viewModel.updateStudyMarginLink(next)
-                                    }
-                                )
-                            }
-
-                            // Draggable, Resizable, Rotatable Stickers on Bible & Margin Canvas
-                            ForEach(viewModel.chapterStickers) { placed in
-                                if let item = viewModel.stickerItem(for: placed.stickerId) {
-                                    DraggablePlacedSticker(
-                                        placed: placed,
-                                        item: item,
-                                        isSelected: viewModel.selectedChapterStickerId == placed.id,
-                                        theme: viewModel.theme,
-                                        onSelect: {
-                                            viewModel.selectedChapterStickerId = (viewModel.selectedChapterStickerId == placed.id) ? nil : placed.id
-                                        },
-                                        onUpdate: { updated in
-                                            viewModel.updateChapterSticker(updated)
-                                        },
-                                        onDelete: {
-                                            viewModel.removeChapterSticker(id: placed.id)
-                                        }
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    .frame(width: unifiedWidth, alignment: .topLeading)
-                    .coordinateSpace(name: "UnifiedCanvasSpace")
-                    .onPreferenceChange(VerseFramePreferenceKey.self) { frames in
-                        verseFrames = frames
-                        let realVerses = frames.filter { $0.key > 0 }
-                        viewModel.updateLayoutForInkReflow(
-                            verseFrames: realVerses,
+                // UNIFIED WRITING WORKSPACE: KJV Scripture + Journal Margin
+                // At 1x zoom, use a native SwiftUI ScrollView (matching Study Notebook) so PKCanvasView
+                // never sits inside a UIHostingController+UIScrollView zoom wrapper during normal writing.
+                if viewModel.journalZoomScale <= 1.01 {
+                    ScrollView(.vertical, showsIndicators: true) {
+                        unifiedCanvasContent(
+                            isLeftHanded: isLeftHanded,
                             scriptureWidth: scriptureWidth,
-                            canvasWidth: unifiedWidth
+                            journalWidth: journalWidth,
+                            unifiedWidth: unifiedWidth
+                        )
+                    }
+                    .frame(width: unifiedWidth)
+                } else {
+                    ZoomableCanvasScrollView(zoomScale: $viewModel.journalZoomScale, contentWidth: unifiedWidth) {
+                        unifiedCanvasContent(
+                            isLeftHanded: isLeftHanded,
+                            scriptureWidth: scriptureWidth,
+                            journalWidth: journalWidth,
+                            unifiedWidth: unifiedWidth
                         )
                     }
                 }
@@ -480,6 +404,106 @@ public struct ScriptureWorkspaceView: View {
                 .zIndex(20)
                 .transition(.move(edge: isLeftHanded ? .trailing : .leading))
             }
+        }
+    }
+
+    @ViewBuilder
+    private func unifiedCanvasContent(isLeftHanded: Bool, scriptureWidth: CGFloat, journalWidth: CGFloat, unifiedWidth: CGFloat) -> some View {
+        ZStack(alignment: .topLeading) {
+            HStack(alignment: .top, spacing: 0) {
+                if !viewModel.showJournalPanel {
+                    Spacer(minLength: 0)
+                }
+
+                if isLeftHanded && viewModel.showJournalPanel {
+                    journalMarginColumn(width: journalWidth)
+                    dashedVerticalDivider
+                }
+
+                scriptureColumn(width: scriptureWidth)
+
+                if !isLeftHanded && viewModel.showJournalPanel {
+                    dashedVerticalDivider
+                    journalMarginColumn(width: journalWidth)
+                } else if !viewModel.showJournalPanel {
+                    Spacer(minLength: 0)
+                }
+            }
+
+            // Unified Apple Pencil Canvas (hidden in Reading Mode unless toggled on; ink preserved!)
+            if viewModel.shouldShowInkOverlay {
+                UnifiedBibleCanvas(viewModel: viewModel) { tapPoint in
+                    handleFingerTapOnCanvas(tapPoint)
+                }
+                .frame(width: unifiedWidth)
+
+                // Draggable Pinned Reference Chips — uses .offset() so hit-box is ONLY the tiny pill!
+                ForEach(viewModel.pinnedReferences) { pin in
+                    DraggableReferenceChip(
+                        pin: pin,
+                        theme: viewModel.theme,
+                        onTap: { viewModel.openPinnedReference(pin) },
+                        onMove: { newPt in viewModel.movePinnedReference(id: pin.id, to: newPt) }
+                    )
+                }
+
+                // Draggable Movable Study Clip Cards (trimmed excerpts + editable personal notes!)
+                ForEach(viewModel.journalClips) { clip in
+                    DraggableClipCard(
+                        clip: clip,
+                        theme: viewModel.theme,
+                        onTap: { viewModel.startEditClip(clip) },
+                        onMove: { newPt in viewModel.moveJournalClip(id: clip.id, to: newPt) }
+                    )
+                }
+
+                // Draggable Permanent Study Link + Margin Note Cards (links Bible ink back to a Study!)
+                ForEach(viewModel.chapterStudyLinks) { link in
+                    DraggableStudyLinkCard(
+                        link: link,
+                        theme: viewModel.theme,
+                        onTap: { viewModel.editingStudyMarginLink = link },
+                        onMove: { newPt in
+                            var next = link
+                            next.posX = Double(newPt.x)
+                            next.posY = Double(newPt.y)
+                            viewModel.updateStudyMarginLink(next)
+                        }
+                    )
+                }
+
+                // Draggable, Resizable, Rotatable Stickers on Bible & Margin Canvas
+                ForEach(viewModel.chapterStickers) { placed in
+                    if let item = viewModel.stickerItem(for: placed.stickerId) {
+                        DraggablePlacedSticker(
+                            placed: placed,
+                            item: item,
+                            isSelected: viewModel.selectedChapterStickerId == placed.id,
+                            theme: viewModel.theme,
+                            onSelect: {
+                                viewModel.selectedChapterStickerId = (viewModel.selectedChapterStickerId == placed.id) ? nil : placed.id
+                            },
+                            onUpdate: { updated in
+                                viewModel.updateChapterSticker(updated)
+                            },
+                            onDelete: {
+                                viewModel.removeChapterSticker(id: placed.id)
+                            }
+                        )
+                    }
+                }
+            }
+        }
+        .frame(width: unifiedWidth, alignment: .topLeading)
+        .coordinateSpace(name: "UnifiedCanvasSpace")
+        .onPreferenceChange(VerseFramePreferenceKey.self) { frames in
+            verseFrames = frames
+            let realVerses = frames.filter { $0.key > 0 }
+            viewModel.updateLayoutForInkReflow(
+                verseFrames: realVerses,
+                scriptureWidth: scriptureWidth,
+                canvasWidth: unifiedWidth
+            )
         }
     }
 
