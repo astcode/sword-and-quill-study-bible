@@ -1,9 +1,10 @@
 import Foundation
 
 public enum ScriptureSearchMode: String, CaseIterable, Identifiable, Sendable {
-    case exact = "Exact Word"
+    case exact = "Exact"
     case wordStartsWith = "Word Forms"
     case contains = "Contains"
+    case meaning = "Meaning"
 
     public var id: String { rawValue }
 }
@@ -514,6 +515,9 @@ public final class ReferenceDatabase: @unchecked Sendable {
         var params: [MagQLiteParam] = []
 
         switch matchMode {
+        case .meaning:
+            return searchScriptureSemanticUnlocked(tokens: tokens, scopeBookId: scopeBookId, limit: limit ?? 60)
+
         case .exact:
             let ftsQuery = tokens.joined(separator: " ")
             if let scopeBookId {
@@ -572,6 +576,83 @@ public final class ReferenceDatabase: @unchecked Sendable {
             if let limit, out.count >= limit { break }
         }
         return out
+    }
+
+    /// 100% offline semantic / meaning search powered natively by MagQLite's VECTOR(64) and <=> cosine distance.
+    private func searchScriptureSemanticUnlocked(tokens: [String], scopeBookId: Int?, limit: Int) -> [SearchResult] {
+        guard let db else { return [] }
+        let dim = 64
+        var qVec = [Double](repeating: 0.0, count: dim)
+        var hitCount = 0
+
+        let vocabSql = "SELECT emb, idf FROM semantic_vocab WHERE word = ? LIMIT 1;"
+        for rawTok in tokens {
+            let candidates = Self.stemCandidates(for: rawTok)
+            for cand in candidates {
+                if let res = try? db.queryParams(vocabSql, params: [.string(cand)]),
+                   let row = res.rows.first,
+                   let vec = Self.parseVector(row.values.first) {
+                    let idf = row.double(at: 1) ?? 4.0
+                    let count = min(dim, vec.count)
+                    for i in 0..<count {
+                        qVec[i] += vec[i] * idf
+                    }
+                    hitCount += 1
+                    break
+                }
+            }
+        }
+        guard hitCount > 0 else { return [] }
+
+        let norm = sqrt(qVec.reduce(0.0) { $0 + $1 * $1 })
+        guard norm > 0 else { return [] }
+        let vecLiteral = "[" + qVec.map { String(format: "%.4f", $0 / norm) }.joined(separator: ",") + "]"
+        let safeLimit = max(1, min(limit, 200))
+
+        let vecSql: String
+        let vecRes: MagQLiteResult?
+        if let scopeBookId {
+            vecSql = "SELECT verse_id, emb <=> '\(vecLiteral)' AS dist FROM verse_vectors WHERE book_id = ? ORDER BY dist ASC LIMIT \(safeLimit);"
+            vecRes = try? db.queryParams(vecSql, params: [.int(Int64(scopeBookId))])
+        } else {
+            vecSql = "SELECT verse_id, emb <=> '\(vecLiteral)' AS dist FROM verse_vectors ORDER BY dist ASC LIMIT \(safeLimit);"
+            vecRes = try? db.query(vecSql)
+        }
+        guard let rows = vecRes?.rows else { return [] }
+
+        var out: [SearchResult] = []
+        out.reserveCapacity(rows.count)
+        let verseSql = "SELECT id, book_id, chapter, verse, text_plain FROM verses WHERE id = ? LIMIT 1;"
+        for row in rows {
+            guard let vid = row.int(at: 0),
+                  let vRes = try? db.queryParams(verseSql, params: [.int(vid)]),
+                  let vRow = vRes.rows.first else { continue }
+            let bookId = Int(vRow.int(at: 1) ?? 0)
+            out.append(SearchResult(
+                id: Int(vRow.int(at: 0) ?? 0),
+                bookId: bookId,
+                bookName: bookMap[bookId]?.name ?? "Book \(bookId)",
+                chapter: Int(vRow.int(at: 2) ?? 0),
+                verse: Int(vRow.int(at: 3) ?? 0),
+                text: vRow.string(at: 4) ?? ""
+            ))
+        }
+        return out
+    }
+
+    private static func parseVector(_ raw: Any?) -> [Double]? {
+        if let arr = raw as? [Double] { return arr }
+        if let arr = raw as? [NSNumber] { return arr.map { $0.doubleValue } }
+        if let arr = raw as? [Any] {
+            let parsed = arr.compactMap { ($0 as? NSNumber)?.doubleValue ?? ($0 as? Double) }
+            return parsed.isEmpty ? nil : parsed
+        }
+        if let str = raw as? String {
+            let trimmed = str.trimmingCharacters(in: CharacterSet(charactersIn: "[] \n\t"))
+            let parsed = trimmed.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+            return parsed.isEmpty ? nil : parsed
+        }
+        return nil
     }
 
     public func lookupStrongs(id raw: String) -> StrongsEntry? {
@@ -838,6 +919,56 @@ public final class ReferenceDatabase: @unchecked Sendable {
             .string("\(norm)%")
         ]) else { return [] }
         return res.rows.map(Self.readPlaceRow)
+    }
+
+    public func nearbyPlaces(
+        lat: Double,
+        lon: Double,
+        radiusMiles: Double = 25,
+        excludeId: String? = nil,
+        limit: Int = 12
+    ) -> [(place: BiblicalPlace, miles: Double)] {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let db else { return [] }
+        let radiusKm = max(1.0, radiusMiles * 1.609344)
+        let safeLimit = max(1, min(limit, 50))
+        let sql: String
+        let params: [MagQLiteParam]
+        if let excludeId, !excludeId.isEmpty {
+            sql = """
+                SELECT id, name, place_type, modern_name, description, lat, lon, verse_count,
+                       ST_DISTANCE_KM(?, ?, lat, lon) AS km
+                FROM biblical_places
+                WHERE id != ? AND ST_WITHIN_KM(?, ?, lat, lon, ?)
+                ORDER BY km ASC
+                LIMIT \(safeLimit);
+            """
+            params = [
+                .double(lat), .double(lon),
+                .string(excludeId),
+                .double(lat), .double(lon), .double(radiusKm)
+            ]
+        } else {
+            sql = """
+                SELECT id, name, place_type, modern_name, description, lat, lon, verse_count,
+                       ST_DISTANCE_KM(?, ?, lat, lon) AS km
+                FROM biblical_places
+                WHERE ST_WITHIN_KM(?, ?, lat, lon, ?)
+                ORDER BY km ASC
+                LIMIT \(safeLimit);
+            """
+            params = [
+                .double(lat), .double(lon),
+                .double(lat), .double(lon), .double(radiusKm)
+            ]
+        }
+        guard let res = try? db.queryParams(sql, params: params) else { return [] }
+        return res.rows.map { row in
+            let place = Self.readPlaceRow(row)
+            let km = row.double(at: 8) ?? 0
+            return (place: place, miles: km / 1.609344)
+        }
     }
 
     public func versesForPlace(placeId: String, limit: Int = 30) -> [SearchResult] {

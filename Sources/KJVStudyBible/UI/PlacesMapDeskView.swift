@@ -25,6 +25,8 @@ public struct PlacesMapDeskView: View {
     @State private var searchResults: [BiblicalPlace] = []
     @State private var selectedPlace: BiblicalPlace? = nil
     @State private var selectedPlaceVerses: [SearchResult] = []
+    @State private var nearbyPlaces: [(place: BiblicalPlace, miles: Double)] = []
+    @State private var nearbyRadiusMiles: Double = 25
     @State private var mapVisualStyle: MapVisualStyle = .hybrid
     @State private var cameraPosition: MapCameraPosition = .region(
         MKCoordinateRegion(
@@ -282,7 +284,7 @@ public struct PlacesMapDeskView: View {
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(viewModel.theme.secondaryText)
 
-            if !selectedPlaceVerses.isEmpty {
+                    if !selectedPlaceVerses.isEmpty {
                 Text("VERSES MENTIONING \(place.name.uppercased())")
                     .font(.system(size: 9.5, weight: .bold))
                     .foregroundStyle(viewModel.theme.secondaryText)
@@ -322,6 +324,69 @@ public struct PlacesMapDeskView: View {
                     }
                 }
             }
+
+            // MagQLite Spatial: Nearby Biblical Places (ST_WITHIN_KM / ST_DISTANCE_KM)
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 6) {
+                    Text("NEARBY PLACES")
+                        .font(.system(size: 9.5, weight: .bold))
+                        .foregroundStyle(viewModel.theme.secondaryText)
+                    Spacer()
+                    ForEach([10.0, 25.0, 50.0], id: \.self) { radius in
+                        Button {
+                            nearbyRadiusMiles = radius
+                            nearbyPlaces = viewModel.referenceDB.nearbyPlaces(
+                                lat: place.lat,
+                                lon: place.lon,
+                                radiusMiles: radius,
+                                excludeId: place.id,
+                                limit: 12
+                            )
+                        } label: {
+                            Text("\(Int(radius)) mi")
+                                .font(.system(size: 9.5, weight: .semibold))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(nearbyRadiusMiles == radius ? viewModel.theme.accentBlue : viewModel.theme.canvasBackground)
+                                .foregroundStyle(nearbyRadiusMiles == radius ? Color.white : viewModel.theme.secondaryText)
+                                .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.top, 4)
+
+                if nearbyPlaces.isEmpty {
+                    Text("No other biblical sites within \(Int(nearbyRadiusMiles)) miles.")
+                        .font(.caption2)
+                        .foregroundStyle(viewModel.theme.secondaryText)
+                } else {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 112), spacing: 5)], alignment: .leading, spacing: 5) {
+                        ForEach(nearbyPlaces, id: \.place.id) { item in
+                            Button {
+                                focusPlace(item.place)
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Text(item.place.name)
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundStyle(viewModel.theme.primaryText)
+                                        .lineLimit(1)
+                                    Spacer(minLength: 2)
+                                    Text(item.miles < 1 ? "<1 mi" : String(format: "%.0f mi", item.miles))
+                                        .font(.system(size: 9.5).monospacedDigit())
+                                        .foregroundStyle(viewModel.theme.secondaryText)
+                                }
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 4)
+                                .background(viewModel.theme.canvasBackground)
+                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                                .overlay(RoundedRectangle(cornerRadius: 6).stroke(viewModel.theme.dividerColor, lineWidth: 0.8))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
         }
         .padding(10)
         .background(viewModel.theme.panelBackground)
@@ -332,6 +397,13 @@ public struct PlacesMapDeskView: View {
     private func focusPlace(_ place: BiblicalPlace) {
         selectedPlace = place
         selectedPlaceVerses = viewModel.referenceDB.versesForPlace(placeId: place.id, limit: 24)
+        nearbyPlaces = viewModel.referenceDB.nearbyPlaces(
+            lat: place.lat,
+            lon: place.lon,
+            radiusMiles: nearbyRadiusMiles,
+            excludeId: place.id,
+            limit: 12
+        )
         viewModel.recordStudyEvent(
             kind: .place,
             title: place.name,

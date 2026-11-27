@@ -654,6 +654,8 @@ public struct SearchSheet: View {
             return "Words starting with term (e.g. \"sin\" matches sin, sins, sinner, sinful, sinned)"
         case .contains:
             return "Anywhere inside a word (e.g. \"sin\" also matches blessing, missing)"
+        case .meaning:
+            return "Offline AI vector search by concept (e.g. \"comfort when grieving\", \"wisdom about money\")"
         }
     }
 
@@ -671,7 +673,7 @@ public struct SearchSheet: View {
             switch matchMode {
             case .exact:
                 pattern = "\\b\(escaped)\\b"
-            case .wordStartsWith:
+            case .wordStartsWith, .meaning:
                 pattern = "\\b\(escaped)[A-Za-z0-9]*"
             case .contains:
                 pattern = escaped
