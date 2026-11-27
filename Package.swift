@@ -14,10 +14,18 @@ let package = Package(
         ),
     ],
     targets: [
+        .binaryTarget(
+            name: "CMagQLite",
+            path: "Vendor/MagQLite.xcframework"
+        ),
         .target(
             name: "KJVStudyBible",
+            dependencies: [
+                "CMagQLite",
+            ],
             resources: [
-                .copy("Resources/kjv_reference.sqlite"),
+                .copy("Resources/kjv_reference.mql"),
+                .copy("Resources/kjv_reference.mql.pages"),
             ],
             linkerSettings: [
                 .linkedLibrary("sqlite3"),

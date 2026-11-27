@@ -530,6 +530,7 @@ public struct SearchSheet: View {
     @State private var personalHits: [PersonalSearchHit] = []
     @State private var strongsHit: StrongsEntry? = nil
     @State private var currentBookOnly: Bool = false
+    @State private var matchMode: ScriptureSearchMode = .exact
 
     public var body: some View {
         NavigationStack {
@@ -540,6 +541,21 @@ public struct SearchSheet: View {
                         .onSubmit { runSearch() }
                     Button("Search") { runSearch() }
                         .buttonStyle(.borderedProminent)
+                }
+                .padding(.horizontal)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Picker("Match Mode", selection: $matchMode) {
+                        ForEach(ScriptureSearchMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: matchMode) { _, _ in runSearch() }
+
+                    Text(matchModeHint)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
                 .padding(.horizontal)
 
@@ -602,7 +618,7 @@ public struct SearchSheet: View {
                         }
                     }
 
-                    Section("Scripture Results (\(results.count))") {
+                    Section("Scripture Results (\(results.count.formatted()))") {
                         ForEach(results) { item in
                             Button {
                                 viewModel.navigate(to: VerseRef(bookId: item.bookId, chapter: item.chapter, verse: item.verse))
@@ -612,9 +628,8 @@ public struct SearchSheet: View {
                                     Text(item.referenceLabel)
                                         .font(.subheadline.weight(.semibold))
                                         .foregroundStyle(Color.accentColor)
-                                    Text(item.text)
+                                    Text(highlightedText(item.text))
                                         .font(.system(size: 15, design: .serif))
-                                        .foregroundStyle(.primary)
                                 }
                             }
                         }
@@ -631,13 +646,58 @@ public struct SearchSheet: View {
         }
     }
 
+    private var matchModeHint: String {
+        switch matchMode {
+        case .exact:
+            return "Exact whole word only (e.g. \"sin\" matches sin, not sins or sinner)"
+        case .wordStartsWith:
+            return "Words starting with term (e.g. \"sin\" matches sin, sins, sinner, sinful, sinned)"
+        case .contains:
+            return "Anywhere inside a word (e.g. \"sin\" also matches blessing, missing)"
+        }
+    }
+
+    private func highlightedText(_ text: String) -> AttributedString {
+        var attr = AttributedString(text)
+        attr.foregroundColor = .primary
+        let tokens = query
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+        guard !tokens.isEmpty else { return attr }
+
+        for tok in tokens {
+            let escaped = NSRegularExpression.escapedPattern(for: tok)
+            let pattern: String
+            switch matchMode {
+            case .exact:
+                pattern = "\\b\(escaped)\\b"
+            case .wordStartsWith:
+                pattern = "\\b\(escaped)[A-Za-z0-9]*"
+            case .contains:
+                pattern = escaped
+            }
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { continue }
+            let nsRange = NSRange(text.startIndex..., in: text)
+            for match in regex.matches(in: text, range: nsRange) {
+                if let strRange = Range(match.range, in: text),
+                   let attrRange = Range(strRange, in: attr) {
+                    attr[attrRange].font = .system(size: 15, weight: .bold, design: .serif)
+                    attr[attrRange].backgroundColor = Color.yellow.opacity(0.45)
+                }
+            }
+        }
+        return attr
+    }
+
     private func runSearch() {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         strongsHit = viewModel.referenceDB.lookupStrongs(id: trimmed)
         personalHits = viewModel.studyDB.searchPersonalStudy(query: trimmed, limit: 25)
         results = viewModel.referenceDB.searchScripture(
             query: trimmed,
-            scopeBookId: currentBookOnly ? viewModel.currentBookId : nil
+            scopeBookId: currentBookOnly ? viewModel.currentBookId : nil,
+            matchMode: matchMode,
+            limit: nil
         )
     }
 }

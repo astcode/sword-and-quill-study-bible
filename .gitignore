@@ -21,3 +21,8 @@ WellMarked-Backup-*.sqlite
 Thumbs.db
 *.swp
 *~
+
+# Generated paged MagQLite reference store (>100MB GitHub limit; rebuild via tools/convert_reference_to_magqlite.py)
+Sources/KJVStudyBible/Resources/kjv_reference.mql.pages
+*.mql.wal
+*.mql.lock

@@ -1,0 +1,4 @@
+module CMagQLite {
+    header "magqlite.h"
+    export *
+}
