@@ -541,7 +541,7 @@ public final class BibleWorkspaceViewModel: ObservableObject {
                 sourceLabel: sourceLabel,
                 excerpt: trimmedExcerpt,
                 userNote: trimmedNote,
-                posX: 430.0,
+                posX: defaultJournalMarginX(),
                 posY: yOffset,
                 updatedAt: ISO8601DateFormatter().string(from: Date())
             )
@@ -682,8 +682,77 @@ public final class BibleWorkspaceViewModel: ObservableObject {
         return ChapterInkAnchors(
             scriptureWidth: Double(currentScriptureWidth),
             canvasWidth: Double(currentCanvasWidth),
-            verseRects: map
+            verseRects: map,
+            isLeftHanded: isLeftHandedLayout
         )
+    }
+
+    public func defaultJournalMarginX(offset: Double = 0) -> Double {
+        if !showJournalPanel {
+            return 120.0 + offset
+        }
+        if isLeftHandedLayout {
+            return 28.0 + offset
+        }
+        let sWidth = currentScriptureWidth > 0 ? Double(currentScriptureWidth) : 430.0
+        return sWidth + 24.0 + offset
+    }
+
+    /// Translates active chapter margin items (pins, clips, study links, stickers) cleanly between
+    /// Right-Handed and Left-Handed zones without mirroring text or shapes.
+    public func repositionCanvasItemsForHandednessChange(fromLeftHanded oldLeft: Bool, toLeftHanded newLeft: Bool) {
+        guard oldLeft != newLeft, showJournalPanel else { return }
+        let sWidth = currentScriptureWidth > 0 ? Double(currentScriptureWidth) : 440.0
+        let cWidth = currentCanvasWidth > sWidth ? Double(currentCanvasWidth) : (sWidth + 340.0)
+        let jWidth = max(140.0, cWidth - sWidth - 1.0)
+
+        func translateX(_ x: Double) -> Double {
+            if !oldLeft && newLeft {
+                // Right-Handed -> Left-Handed
+                if x >= sWidth - 8.0 {
+                    // Margin item -> move into left margin
+                    return max(16.0, x - (sWidth + 1.0))
+                } else {
+                    // Scripture item -> move onto right-side Scripture
+                    return x + (jWidth + 1.0)
+                }
+            } else {
+                // Left-Handed -> Right-Handed
+                if x < jWidth + 8.0 {
+                    // Left margin item -> move back into right margin
+                    return x + (sWidth + 1.0)
+                } else {
+                    // Right-side Scripture item -> move back onto left-side Scripture
+                    return max(16.0, x - (jWidth + 1.0))
+                }
+            }
+        }
+
+        for idx in pinnedReferences.indices {
+            pinnedReferences[idx].posX = translateX(pinnedReferences[idx].posX)
+            studyDB.upsertPinnedReference(pinnedReferences[idx], studyId: activeLayerStudyId)
+        }
+        for idx in journalClips.indices {
+            journalClips[idx].posX = translateX(journalClips[idx].posX)
+            studyDB.upsertJournalClip(journalClips[idx], studyId: activeLayerStudyId)
+        }
+        for idx in chapterStudyLinks.indices {
+            chapterStudyLinks[idx].posX = translateX(chapterStudyLinks[idx].posX)
+            studyDB.upsertStudyMarginLink(chapterStudyLinks[idx])
+        }
+        for idx in chapterStickers.indices {
+            chapterStickers[idx].posX = translateX(chapterStickers[idx].posX)
+            let st = chapterStickers[idx]
+            studyDB.updatePlacedSticker(
+                id: st.id,
+                posX: st.posX,
+                posY: st.posY,
+                width: st.width,
+                height: st.height,
+                rotation: st.rotation,
+                opacity: st.opacity
+            )
+        }
     }
 
     public func handleCanvasDrawingChanged(_ newDrawing: PKDrawing, canUndo: Bool, canRedo: Bool) {
@@ -721,7 +790,10 @@ public final class BibleWorkspaceViewModel: ObservableObject {
             return
         }
 
-        // Check whether verse positions or column widths shifted meaningfully (> 8pt)
+        let oldLeft = oldAnchors.isLeftHanded ?? false
+        let newLeft = isLeftHandedLayout
+
+        // Check whether verse positions, column widths, or handedness shifted meaningfully (> 8pt)
         var maxDelta: Double = abs(currentAnchors.scriptureWidth - oldAnchors.scriptureWidth)
         for (v, newRect) in currentAnchors.verseRects {
             if let oldRect = oldAnchors.verseRects[v] {
@@ -730,10 +802,15 @@ public final class BibleWorkspaceViewModel: ObservableObject {
                 maxDelta = max(maxDelta, abs(newRect.height - oldRect.height))
             }
         }
-        guard maxDelta > 8.0 else { return }
+        guard maxDelta > 8.0 || oldLeft != newLeft else { return }
 
-        let oldScriptureRight: Double = (oldAnchors.verseRects.values.map(\.maxX).max() ?? oldAnchors.scriptureWidth)
-        let newScriptureRight: Double = (currentAnchors.verseRects.values.map(\.maxX).max() ?? currentAnchors.scriptureWidth)
+        let oldScriptureMinX: Double = oldAnchors.verseRects.values.map(\.minX).min() ?? (oldLeft ? max(0, oldAnchors.canvasWidth - oldAnchors.scriptureWidth) : 0)
+        let oldScriptureMaxX: Double = oldAnchors.verseRects.values.map(\.maxX).max() ?? (oldScriptureMinX + oldAnchors.scriptureWidth)
+        let newScriptureMinX: Double = currentAnchors.verseRects.values.map(\.minX).min() ?? (newLeft ? max(0, currentAnchors.canvasWidth - currentAnchors.scriptureWidth) : 0)
+        let newScriptureMaxX: Double = currentAnchors.verseRects.values.map(\.maxX).max() ?? (newScriptureMinX + currentAnchors.scriptureWidth)
+
+        let oldMarginOriginX: Double = oldLeft ? 0.0 : (oldScriptureMaxX + 1.0)
+        let newMarginOriginX: Double = newLeft ? 0.0 : (newScriptureMaxX + 1.0)
 
         let sortedOldVerses = oldAnchors.verseRects.sorted { $0.key < $1.key }
         var reflowedStrokes: [PKStroke] = []
@@ -772,10 +849,11 @@ public final class BibleWorkspaceViewModel: ObservableObject {
             let targetMidY = newRect.minY + relY * newRect.height
             let dy = targetMidY - midY
 
+            let wasInMargin = oldLeft ? (midX < oldScriptureMinX - 4.0) : (midX > oldScriptureMaxX + 4.0)
             let dx: Double
-            if midX > oldScriptureRight + 4.0 {
-                // Margin handwriting tracks the right edge of the Scripture column
-                dx = newScriptureRight - oldScriptureRight
+            if wasInMargin {
+                // Margin handwriting translates cleanly to the active Journal Margin (without flipping letters!)
+                dx = newMarginOriginX - oldMarginOriginX
             } else {
                 // Over-Scripture underlines/circles track the Scripture column origin
                 dx = newRect.minX - oldRect.minX
@@ -917,7 +995,7 @@ public final class BibleWorkspaceViewModel: ObservableObject {
             syncModeFromPanels()
         }
         let yOffset = 90.0 + Double(pinnedReferences.count % 8) * 44.0
-        let posX = point.map { Double($0.x) } ?? defaultX
+        let posX = point.map { Double($0.x) } ?? defaultJournalMarginX(offset: 40.0)
         let posY = point.map { Double($0.y) } ?? yOffset
         let pin = PinnedReference(
             id: UUID().uuidString,
@@ -1259,7 +1337,7 @@ public final class BibleWorkspaceViewModel: ObservableObject {
 
     public func addStudyMarginLink(study: StudySession, verse: Int?, noteText: String) {
         let offset = Double(chapterStudyLinks.count % 5)
-        let startX: Double = showJournalPanel ? 430.0 + offset * 14.0 : 120.0 + offset * 14.0
+        let startX: Double = defaultJournalMarginX(offset: offset * 14.0)
         let startY: Double = 90.0 + offset * 48.0
         let link = StudyMarginLink(
             id: UUID().uuidString,
@@ -1447,7 +1525,7 @@ public final class BibleWorkspaceViewModel: ObservableObject {
 
     public func placeStickerOnChapter(_ item: StickerItem) {
         let offsetIndex = Double(chapterStickers.count % 6)
-        let startX: Double = showJournalPanel ? 420.0 + offsetIndex * 16.0 : 120.0 + offsetIndex * 16.0
+        let startX: Double = defaultJournalMarginX(offset: offsetIndex * 16.0)
         let startY: Double = 110.0 + offsetIndex * 28.0
         let defaultSize: Double = item.kind == .symbol ? 68.0 : 96.0
         let placed = studyDB.addPlacedSticker(

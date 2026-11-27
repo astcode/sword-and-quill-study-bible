@@ -404,11 +404,13 @@ public struct ChapterInkAnchors: Codable, Hashable, Sendable {
     public let scriptureWidth: Double
     public let canvasWidth: Double
     public let verseRects: [Int: VerseAnchorRect]
+    public let isLeftHanded: Bool?
 
-    public init(scriptureWidth: Double, canvasWidth: Double, verseRects: [Int: VerseAnchorRect]) {
+    public init(scriptureWidth: Double, canvasWidth: Double, verseRects: [Int: VerseAnchorRect], isLeftHanded: Bool? = false) {
         self.scriptureWidth = scriptureWidth
         self.canvasWidth = canvasWidth
         self.verseRects = verseRects
+        self.isLeftHanded = isLeftHanded
     }
 }
 

@@ -1028,7 +1028,8 @@ public struct ViewSettingsSheet: View {
                         Text("Left-Handed").tag(true)
                     }
                     .pickerStyle(.segmented)
-                    .onChange(of: viewModel.isLeftHandedLayout) { _, _ in
+                    .onChange(of: viewModel.isLeftHandedLayout) { oldVal, newVal in
+                        viewModel.repositionCanvasItemsForHandednessChange(fromLeftHanded: oldVal, toLeftHanded: newVal)
                         viewModel.persistAppearancePreferences()
                     }
 
