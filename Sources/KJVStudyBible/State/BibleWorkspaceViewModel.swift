@@ -285,7 +285,14 @@ public final class BibleWorkspaceViewModel: ObservableObject {
 
         if let loaded = studyDB.loadChapterInk(bookId: currentBookId, chapter: currentChapter, studyId: sid),
            let parsed = try? PKDrawing(data: loaded.data) {
-            chapterDrawing = parsed
+            // Heal any strokes that previously had non-identity PKStroke.transform (which causes PKMetalRenderer jumps on touch)
+            if parsed.strokes.contains(where: { !$0.transform.isIdentity }) {
+                let healed = PKDrawing(strokes: parsed.strokes.map { Self.bakedTranslatedStroke($0, dx: 0, dy: 0) })
+                chapterDrawing = healed
+                studyDB.saveChapterInk(bookId: currentBookId, chapter: currentChapter, data: healed.dataRepresentation(), fontSize: fontSize, anchors: loaded.anchors, studyId: sid)
+            } else {
+                chapterDrawing = parsed
+            }
             savedInkAnchors = loaded.anchors
         } else {
             chapterDrawing = PKDrawing()
@@ -810,6 +817,25 @@ public final class BibleWorkspaceViewModel: ObservableObject {
         }
     }
 
+    /// Bakes any existing `stroke.transform` plus `(dx, dy)` directly into `PKStrokePoint.location`
+    /// and resets `transform` to `.identity`, preventing iPadOS `PKMetalRenderer` jump/flicker bugs during live touch.
+    private static func bakedTranslatedStroke(_ stroke: PKStroke, dx: CGFloat, dy: CGFloat) -> PKStroke {
+        let combined = stroke.transform.concatenating(CGAffineTransform(translationX: dx, y: dy))
+        let bakedPoints: [PKStrokePoint] = stroke.path.map { pt in
+            PKStrokePoint(
+                location: pt.location.applying(combined),
+                timeOffset: pt.timeOffset,
+                size: pt.size,
+                opacity: pt.opacity,
+                force: pt.force,
+                azimuth: pt.azimuth,
+                altitude: pt.altitude
+            )
+        }
+        let newPath = PKStrokePath(controlPoints: bakedPoints, creationDate: stroke.path.creationDate)
+        return PKStroke(ink: stroke.ink, path: newPath, transform: .identity, mask: stroke.mask)
+    }
+
     private func spineMirrorDrawing(
         _ drawing: PKDrawing,
         fromLeftHanded oldLeft: Bool,
@@ -838,9 +864,7 @@ public final class BibleWorkspaceViewModel: ObservableObject {
         // A. Over-Scripture strokes translate cleanly to stay locked to the exact Bible words
         let scriptureDX: CGFloat = CGFloat((!oldLeft && newLeft) ? (jWidth + 1.0) : -(jWidth + 1.0))
         for i in scriptureIndices {
-            var s = resultStrokes[i]
-            s.transform = s.transform.concatenating(CGAffineTransform(translationX: scriptureDX, y: 0))
-            resultStrokes[i] = s
+            resultStrokes[i] = Self.bakedTranslatedStroke(resultStrokes[i], dx: scriptureDX, dy: 0)
         }
 
         // B. Cluster nearby margin strokes into note blocks (union-find on expanded bounding boxes)
@@ -892,9 +916,7 @@ public final class BibleWorkspaceViewModel: ObservableObject {
             }
             let dx = CGFloat(targetMidX - midX)
             for sid in strokeIds {
-                var s = resultStrokes[sid]
-                s.transform = s.transform.concatenating(CGAffineTransform(translationX: dx, y: 0))
-                resultStrokes[sid] = s
+                resultStrokes[sid] = Self.bakedTranslatedStroke(resultStrokes[sid], dx: dx, dy: 0)
             }
         }
 
@@ -1005,9 +1027,7 @@ public final class BibleWorkspaceViewModel: ObservableObject {
                 dx = newRect.minX - oldRect.minX
             }
 
-            var moved = stroke
-            moved.transform = moved.transform.concatenating(CGAffineTransform(translationX: CGFloat(dx), y: CGFloat(dy)))
-            reflowedStrokes.append(moved)
+            reflowedStrokes.append(Self.bakedTranslatedStroke(stroke, dx: CGFloat(dx), dy: CGFloat(dy)))
         }
 
         let updatedDrawing = PKDrawing(strokes: reflowedStrokes)
