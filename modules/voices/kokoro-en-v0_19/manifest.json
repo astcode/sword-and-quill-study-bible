@@ -1,0 +1,51 @@
+{
+  "id": "kokoro-en-v0_19",
+  "title": "Kokoro-82M Studio Neural Voices",
+  "version": 1,
+  "totalDownloadBytes": 94890429,
+  "totalDiskBytes": 146249732,
+  "files": [
+    {
+      "file": "model.part0.sqz",
+      "target": "model.int8.onnx",
+      "append": false,
+      "rawSize": 44728993,
+      "compressedSize": 21914682
+    },
+    {
+      "file": "model.part1.sqz",
+      "target": "model.int8.onnx",
+      "append": true,
+      "rawSize": 44728993,
+      "compressedSize": 35920028
+    },
+    {
+      "file": "model.part2.sqz",
+      "target": "model.int8.onnx",
+      "append": true,
+      "rawSize": 44728991,
+      "compressedSize": 32307453
+    },
+    {
+      "file": "voices.bin.sqz",
+      "target": "voices.bin",
+      "append": false,
+      "rawSize": 5755904,
+      "compressedSize": 3473159
+    },
+    {
+      "file": "tokens.txt.sqz",
+      "target": "tokens.txt",
+      "append": false,
+      "rawSize": 1078,
+      "compressedSize": 692
+    },
+    {
+      "file": "lexicon-en-us.txt.sqz",
+      "target": "lexicon-en-us.txt",
+      "append": false,
+      "rawSize": 6305773,
+      "compressedSize": 1274415
+    }
+  ]
+}
