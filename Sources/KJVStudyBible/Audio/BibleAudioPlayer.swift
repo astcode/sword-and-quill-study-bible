@@ -2,7 +2,7 @@ import AVFoundation
 import Foundation
 import SwiftUI
 
-// MARK: - 100% Offline Read-Aloud Bible Audio Player (Kokoro-82M Neural + AVSpeechSynthesizer Fallback)
+// MARK: - 100% Offline Read-Aloud Bible Audio Player (Fast Piper VITS + Kokoro-82M Neural + Apple Fallback)
 
 public enum AudioSleepTimer: Int, CaseIterable, Identifiable, Sendable {
     case off = 0
@@ -68,22 +68,45 @@ public final class BibleAudioPlayer: NSObject, ObservableObject {
     public override init() {
         super.init()
         synthesizer.delegate = self
+        if let active = resolvedNeuralSelection() {
+            let spec = kokoroManager.engineSpec(for: active.pack)
+            Task.detached(priority: .utility) { [kokoroEngine] in
+                try? await Task.sleep(nanoseconds: 1_200_000_000)
+                kokoroEngine.prewarm(spec: spec)
+            }
+        }
     }
 
-    /// True when Kokoro-82M is installed and the user has either chosen a Kokoro voice or not overridden it with an Apple voice.
+    /// Resolves which installed neural pack + speaker ID should speak, or nil if Apple System Voice is selected.
+    public func resolvedNeuralSelection() -> (pack: NeuralPackID, sid: Int32, label: String)? {
+        if selectedVoiceIdentifier == "piper:ryan", kokoroManager.isInstalled(.piperRyan) {
+            return (.piperRyan, 0, "Ryan · Neural")
+        }
+        if selectedVoiceIdentifier == "piper:lessac", kokoroManager.isInstalled(.piperLessac) {
+            return (.piperLessac, 0, "Lessac · Neural")
+        }
+        if selectedVoiceIdentifier.hasPrefix("kokoro:"), kokoroManager.isInstalled(.kokoro) {
+            let kv = KokoroVoice.fromIdentifier(selectedVoiceIdentifier) ?? KokoroVoice.defaultVoice
+            return (.kokoro, kv.sid, "\(kv.displayName) · Kokoro")
+        }
+        // Default when no explicit Apple system voice was selected: prefer fastest installed neural pack!
+        if selectedVoiceIdentifier.isEmpty, let best = kokoroManager.preferredInstalledPack {
+            switch best {
+            case .piperRyan: return (.piperRyan, 0, "Ryan · Neural")
+            case .piperLessac: return (.piperLessac, 0, "Lessac · Neural")
+            case .kokoro: return (.kokoro, KokoroVoice.defaultVoice.sid, "\(KokoroVoice.defaultVoice.displayName) · Kokoro")
+            }
+        }
+        return nil
+    }
+
     public var isUsingNeuralVoice: Bool {
-        guard kokoroManager.isInstalled else { return false }
-        if selectedVoiceIdentifier.isEmpty { return true }
-        return selectedVoiceIdentifier.hasPrefix("kokoro:")
-    }
-
-    public var activeKokoroVoice: KokoroVoice {
-        KokoroVoice.fromIdentifier(selectedVoiceIdentifier) ?? KokoroVoice.defaultVoice
+        resolvedNeuralSelection() != nil
     }
 
     public var activeVoiceDisplayName: String {
-        if isUsingNeuralVoice {
-            return "\(activeKokoroVoice.displayName) · Neural"
+        if let neural = resolvedNeuralSelection() {
+            return neural.label
         }
         if let v = resolvedAppleVoice() {
             return v.name
@@ -100,6 +123,16 @@ public final class BibleAudioPlayer: NSObject, ObservableObject {
                 }
                 return a.name < b.name
             }
+    }
+
+    public func selectPiperPack(_ pack: NeuralPackID) {
+        selectedVoiceIdentifier = pack.voiceIdentifierPrefix
+        UserDefaults.standard.set(selectedVoiceIdentifier, forKey: "sq_audio_voice_id")
+        clearPrefetch()
+        if isPlaying || isSynthesizing {
+            stopCurrentSpeechOnly()
+            speakCurrentVerse()
+        }
     }
 
     public func selectKokoroVoice(_ voice: KokoroVoice) {
@@ -165,24 +198,16 @@ public final class BibleAudioPlayer: NSObject, ObservableObject {
         configureAudioSession()
         stopCurrentSpeechOnly()
 
-        if isUsingNeuralVoice {
-            let voice = activeKokoroVoice
+        if let neural = resolvedNeuralSelection() {
             let genID = bumpNeuralGeneration()
-            let mPath = kokoroManager.modelPath
-            let vPath = kokoroManager.voicesPath
-            let tPath = kokoroManager.tokensPath
-            let lPath = kokoroManager.lexiconPath
-
+            let spec = kokoroManager.engineSpec(for: neural.pack)
             neuralTask = Task { [weak self] in
                 guard let self else { return }
                 let audio = await self.kokoroEngine.synthesize(
                     text: text,
-                    speakerId: voice.sid,
-                    speed: 0.96,
-                    modelPath: mPath,
-                    voicesPath: vPath,
-                    tokensPath: tPath,
-                    lexiconPath: lPath
+                    speakerId: neural.sid,
+                    speed: 0.98,
+                    spec: spec
                 )
                 guard !Task.isCancelled, self.neuralGenerationID == genID, let audio else { return }
                 self.playPCMBuffer(audio: audio, genID: genID, advanceOnComplete: false)
@@ -275,7 +300,6 @@ public final class BibleAudioPlayer: NSObject, ObservableObject {
             if audioEngine.isRunning {
                 audioEngine.stop()
             }
-            kokoroEngine.unload()
         }
     }
 
@@ -324,8 +348,8 @@ public final class BibleAudioPlayer: NSObject, ObservableObject {
         currentVerseNumber = v.verse
         onHighlightVerse?(v.verse)
 
-        if isUsingNeuralVoice {
-            speakCurrentVerseNeural(verseIndex: currentVerseIndex, text: v.text)
+        if let neural = resolvedNeuralSelection() {
+            speakCurrentVerseNeural(verseIndex: currentVerseIndex, text: v.text, pack: neural.pack, sid: neural.sid)
             return
         }
 
@@ -337,16 +361,12 @@ public final class BibleAudioPlayer: NSObject, ObservableObject {
         synthesizer.speak(utterance)
     }
 
-    // MARK: - Kokoro-82M Neural Synthesis + Lookahead Pre-Buffering
+    // MARK: - On-Device Neural Synthesis + Lookahead Pre-Buffering
 
-    private func speakCurrentVerseNeural(verseIndex: Int, text: String) {
+    private func speakCurrentVerseNeural(verseIndex: Int, text: String, pack: NeuralPackID, sid: Int32) {
         let genID = bumpNeuralGeneration()
-        let voice = activeKokoroVoice
         let speed = speechRateMultiplier
-        let mPath = kokoroManager.modelPath
-        let vPath = kokoroManager.voicesPath
-        let tPath = kokoroManager.tokensPath
-        let lPath = kokoroManager.lexiconPath
+        let spec = kokoroManager.engineSpec(for: pack)
 
         isPlaying = true
         isNeuralPaused = false
@@ -357,7 +377,7 @@ public final class BibleAudioPlayer: NSObject, ObservableObject {
             prefetchedAudio = nil
             isSynthesizing = false
             playPCMBuffer(audio: ready, genID: genID, advanceOnComplete: true)
-            scheduleLookaheadPrefetch(nextIndex: verseIndex + 1, voice: voice, speed: speed)
+            scheduleLookaheadPrefetch(nextIndex: verseIndex + 1, sid: sid, speed: speed, spec: spec)
             return
         }
 
@@ -366,18 +386,14 @@ public final class BibleAudioPlayer: NSObject, ObservableObject {
             guard let self else { return }
             let audio = await self.kokoroEngine.synthesize(
                 text: text,
-                speakerId: voice.sid,
+                speakerId: sid,
                 speed: speed,
-                modelPath: mPath,
-                voicesPath: vPath,
-                tokensPath: tPath,
-                lexiconPath: lPath
+                spec: spec
             )
             guard !Task.isCancelled, self.neuralGenerationID == genID else { return }
             self.isSynthesizing = false
 
             guard let audio else {
-                // Graceful fallback to Apple voice if synthesis fails for any reason
                 let utterance = AVSpeechUtterance(string: text)
                 utterance.voice = self.resolvedAppleVoice()
                 utterance.rate = min(AVSpeechUtteranceMaximumSpeechRate, max(AVSpeechUtteranceMinimumSpeechRate, AVSpeechUtteranceDefaultSpeechRate * speed))
@@ -386,29 +402,22 @@ public final class BibleAudioPlayer: NSObject, ObservableObject {
             }
 
             self.playPCMBuffer(audio: audio, genID: genID, advanceOnComplete: true)
-            self.scheduleLookaheadPrefetch(nextIndex: verseIndex + 1, voice: voice, speed: speed)
+            self.scheduleLookaheadPrefetch(nextIndex: verseIndex + 1, sid: sid, speed: speed, spec: spec)
         }
     }
 
-    private func scheduleLookaheadPrefetch(nextIndex: Int, voice: KokoroVoice, speed: Float) {
+    private func scheduleLookaheadPrefetch(nextIndex: Int, sid: Int32, speed: Float, spec: NeuralEngineSpec) {
         prefetchTask?.cancel()
         guard nextIndex >= 0 && nextIndex < verses.count else { return }
         let nextText = verses[nextIndex].text
-        let mPath = kokoroManager.modelPath
-        let vPath = kokoroManager.voicesPath
-        let tPath = kokoroManager.tokensPath
-        let lPath = kokoroManager.lexiconPath
 
         prefetchTask = Task { [weak self] in
             guard let self else { return }
             let audio = await self.kokoroEngine.synthesize(
                 text: nextText,
-                speakerId: voice.sid,
+                speakerId: sid,
                 speed: speed,
-                modelPath: mPath,
-                voicesPath: vPath,
-                tokensPath: tPath,
-                lexiconPath: lPath
+                spec: spec
             )
             guard !Task.isCancelled, let audio else { return }
             self.prefetchedVerseIndex = nextIndex
@@ -423,8 +432,7 @@ public final class BibleAudioPlayer: NSObject, ObservableObject {
             return
         }
 
-        // Add a subtle 0.22s natural pause after each verse
-        let padSamples = Int(sampleRate * 0.22)
+        let padSamples = Int(sampleRate * 0.20)
         let totalFrames = AVAudioFrameCount(audio.samples.count + padSamples)
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: totalFrames) else {
             if advanceOnComplete { advanceAfterVerseFinished() }
@@ -491,6 +499,7 @@ public final class BibleAudioPlayer: NSObject, ObservableObject {
     private func resolvedAppleVoice() -> AVSpeechSynthesisVoice? {
         if !selectedVoiceIdentifier.isEmpty,
            !selectedVoiceIdentifier.hasPrefix("kokoro:"),
+           !selectedVoiceIdentifier.hasPrefix("piper:"),
            let saved = AVSpeechSynthesisVoice(identifier: selectedVoiceIdentifier) {
             return saved
         }
@@ -555,8 +564,8 @@ public struct BibleAudioMiniBar: View {
                             .clipShape(Capsule())
                     }
                 }
-                if kokoro.isDownloading {
-                    Text("Downloading Kokoro-82M… \(Int(kokoro.downloadProgress * 100))%")
+                if let dl = kokoro.downloadingPack {
+                    Text("Downloading \(dl.shortName)… \(Int(kokoro.downloadProgress * 100))%")
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(theme.accentBlue)
                 } else {
@@ -595,30 +604,39 @@ public struct BibleAudioMiniBar: View {
                     .clipShape(Capsule())
             }
 
-            // Voice Picker Menu (Kokoro-82M Studio Neural + Apple System Fallback)
+            // Voice Picker Menu (Fast Neural Piper VITS + Kokoro-82M + Apple System Voices)
             Menu {
-                if kokoro.isInstalled {
-                    Section("Kokoro-82M Studio Neural (Offline)") {
-                        ForEach(KokoroVoice.allVoices) { kv in
+                Section("Fast Neural Narrators (Instant · Offline)") {
+                    ForEach([NeuralPackID.piperRyan, NeuralPackID.piperLessac]) { pack in
+                        if kokoro.isInstalled(pack) {
+                            let active = player.resolvedNeuralSelection()?.pack == pack
                             Button {
-                                player.selectKokoroVoice(kv)
+                                player.selectPiperPack(pack)
                             } label: {
-                                let selected = player.isUsingNeuralVoice && player.activeKokoroVoice.id == kv.id
-                                Label("\(kv.displayName) · \(kv.accent) — \(kv.styleHint)", systemImage: selected ? "checkmark" : "sparkles")
+                                Label(pack.title, systemImage: active ? "checkmark" : "bolt.fill")
                             }
-                        }
-                    }
-                } else {
-                    Section("Studio Neural Narrator (Kokoro-82M)") {
-                        if kokoro.isDownloading {
-                            Button("Cancel Download (\(Int(kokoro.downloadProgress * 100))%)") {
+                        } else if kokoro.downloadingPack == pack {
+                            Button("Cancel \(pack.shortName) (\(Int(kokoro.downloadProgress * 100))%)") {
                                 kokoro.cancelDownload()
                             }
                         } else {
                             Button {
-                                kokoro.startDownload()
+                                kokoro.startDownload(pack)
                             } label: {
-                                Label("Download Kokoro-82M Voices (~96 MB)", systemImage: "arrow.down.circle.fill")
+                                Label("Download \(pack.shortName) (\(pack.approxDownloadSize))", systemImage: "arrow.down.circle.fill")
+                            }
+                        }
+                    }
+                }
+
+                if kokoro.isInstalled(.kokoro) {
+                    Section("Kokoro-82M Studio (11 Voices)") {
+                        ForEach(KokoroVoice.allVoices) { kv in
+                            Button {
+                                player.selectKokoroVoice(kv)
+                            } label: {
+                                let selected = player.resolvedNeuralSelection()?.pack == .kokoro && player.selectedVoiceIdentifier == kv.id
+                                Label("\(kv.displayName) · \(kv.accent) — \(kv.styleHint)", systemImage: selected ? "checkmark" : "sparkles")
                             }
                         }
                     }

@@ -49,84 +49,94 @@ public struct LibraryManagerSheet: View {
                     }
                 }
 
-                // Studio Neural Audio Narrator (Kokoro-82M)
+                // Studio Neural Audio Narrators (Fast Piper VITS + Optional Kokoro-82M)
                 Section {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(alignment: .top, spacing: 12) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack(spacing: 6) {
-                                    Text("Kokoro-82M Studio Neural Voices")
-                                        .font(.subheadline.weight(.semibold))
-                                    Text("11 Voices")
-                                        .font(.caption2.weight(.bold))
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 2)
-                                        .background(viewModel.theme.accentBlue.opacity(0.14))
-                                        .foregroundStyle(viewModel.theme.accentBlue)
-                                        .clipShape(Capsule())
+                    ForEach(NeuralPackID.allCases) { pack in
+                        let installed = kokoroManager.isInstalled(pack)
+                        let downloading = kokoroManager.downloadingPack == pack
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(alignment: .top, spacing: 12) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack(spacing: 6) {
+                                        Text(pack.title)
+                                            .font(.subheadline.weight(.semibold))
+                                        Text(pack.badgeText)
+                                            .font(.caption2.weight(.bold))
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
+                                            .background(viewModel.theme.accentBlue.opacity(0.14))
+                                            .foregroundStyle(viewModel.theme.accentBlue)
+                                            .clipShape(Capsule())
+                                    }
+                                    Text(pack.summary)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    if installed {
+                                        Text("Installed · \(kokoroManager.formattedDiskSize(for: pack)) on disk · Ready in Read Aloud")
+                                            .font(.caption2.weight(.medium))
+                                            .foregroundStyle(.green)
+                                    } else {
+                                        Text("Optional download (\(pack.approxDownloadSize)) · 100% offline")
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                    }
                                 }
-                                Text("Lifelike on-device neural Bible narration (US & UK voices including Michael, George, Bella, and Emma). Works 100% offline with zero subscription.")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                if kokoroManager.isInstalled {
-                                    Text("Installed · \(kokoroManager.formattedDiskSize) on disk · Active in Read Aloud")
-                                        .font(.caption2.weight(.medium))
-                                        .foregroundStyle(.green)
+
+                                Spacer()
+
+                                if downloading {
+                                    Button("Cancel", role: .destructive) {
+                                        kokoroManager.cancelDownload()
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                } else if installed {
+                                    Button(role: .destructive) {
+                                        kokoroManager.removeVoicePack(pack)
+                                    } label: {
+                                        Image(systemName: "trash")
+                                            .font(.subheadline)
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .padding(.top, 4)
                                 } else {
-                                    Text("Optional download (~96 MB) · Falls back to Apple Voices if not installed")
-                                        .font(.caption2)
+                                    Button {
+                                        kokoroManager.startDownload(pack)
+                                    } label: {
+                                        Label("Get", systemImage: "arrow.down.circle.fill")
+                                            .font(.caption.weight(.semibold))
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .controlSize(.small)
+                                    .tint(viewModel.theme.accentBlue)
+                                    .disabled(kokoroManager.isDownloading)
+                                }
+                            }
+
+                            if downloading {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    ProgressView(value: kokoroManager.downloadProgress)
+                                        .tint(viewModel.theme.accentBlue)
+                                    Text(kokoroManager.statusText ?? "Downloading… \(Int(kokoroManager.downloadProgress * 100))%")
+                                        .font(.caption2.monospacedDigit())
                                         .foregroundStyle(.secondary)
                                 }
                             }
-
-                            Spacer()
-
-                            if kokoroManager.isDownloading {
-                                Button("Cancel", role: .destructive) {
-                                    kokoroManager.cancelDownload()
-                                }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                            } else if kokoroManager.isInstalled {
-                                Button(role: .destructive) {
-                                    kokoroManager.removeVoicePack()
-                                } label: {
-                                    Image(systemName: "trash")
-                                        .font(.subheadline)
-                                }
-                                .buttonStyle(.borderless)
-                                .padding(.top, 4)
-                            } else {
-                                Button {
-                                    kokoroManager.startDownload()
-                                } label: {
-                                    Label("Get", systemImage: "arrow.down.circle.fill")
-                                        .font(.caption.weight(.semibold))
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .controlSize(.small)
-                                .tint(viewModel.theme.accentBlue)
-                            }
                         }
-
-                        if kokoroManager.isDownloading {
-                            VStack(alignment: .leading, spacing: 4) {
-                                ProgressView(value: kokoroManager.downloadProgress)
-                                    .tint(viewModel.theme.accentBlue)
-                                Text(kokoroManager.statusText ?? "Downloading… \(Int(kokoroManager.downloadProgress * 100))%")
-                                    .font(.caption2.monospacedDigit())
-                                    .foregroundStyle(.secondary)
-                            }
-                        } else if let err = kokoroManager.errorMessage {
-                            Text(err)
-                                .font(.caption2)
-                                .foregroundStyle(.red)
-                        }
+                        .padding(.vertical, 4)
                     }
-                    .padding(.vertical, 4)
+
+                    if let err = kokoroManager.errorMessage {
+                        Text(err)
+                            .font(.caption2)
+                            .foregroundStyle(.red)
+                    }
                 } header: {
-                    Text("Studio Neural Audio (Optional)")
+                    Text("On-Device Neural Audio (Optional)")
+                } footer: {
+                    Text("Fast Neural Narrators (Ryan & Lessac) synthesize each verse in ~0.25s with zero pauses on all iPads.")
                 }
 
                 // Installed Modules

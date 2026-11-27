@@ -47,12 +47,7 @@ public struct BibleScrollableInkView<Background: View, Overlay: View>: UIViewRep
         canvas.contentInsetAdjustmentBehavior = .never
         canvas.automaticallyAdjustsScrollIndicatorInsets = false
         canvas.delaysContentTouches = false
-        canvas.canCancelContentTouches = false
-
-        // Finger-only pan & pinch so Apple Pencil exclusively draws!
-        let directOnly = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
-        canvas.panGestureRecognizer.allowedTouchTypes = directOnly
-        canvas.pinchGestureRecognizer?.allowedTouchTypes = directOnly
+        canvas.canCancelContentTouches = true
 
         canvas.delegate = context.coordinator
         canvas.drawing = viewModel.chapterDrawing
@@ -117,7 +112,10 @@ public struct BibleScrollableInkView<Background: View, Overlay: View>: UIViewRep
 
     public func updateUIView(_ canvas: ViewportPKCanvasView, context: Context) {
         let coord = context.coordinator
+        let chapterKey = "\(viewModel.currentBookId)-\(viewModel.currentChapter)"
+        let didChangeChapter = coord.lastChapterKey != chapterKey
         coord.bgHost?.rootView = background
+        coord.bgHost?.view.invalidateIntrinsicContentSize()
         coord.ovHost?.rootView = overlay
         coord.requestedWidth = contentWidth
         canvas.onFingerTap = onFingerTapPoint
@@ -137,7 +135,7 @@ public struct BibleScrollableInkView<Background: View, Overlay: View>: UIViewRep
             coord.lastPencilOnly = viewModel.pencilOnly
         }
 
-        if coord.appliedRevision != viewModel.drawingRevision || coord.lastShowInk != showInk {
+        if coord.appliedRevision != viewModel.drawingRevision || coord.lastShowInk != showInk || didChangeChapter {
             coord.isProgrammaticUpdate = true
             canvas.drawing = showInk ? viewModel.chapterDrawing : PKDrawing()
             canvas.undoManager?.removeAllActions()
@@ -145,6 +143,10 @@ public struct BibleScrollableInkView<Background: View, Overlay: View>: UIViewRep
             coord.appliedRevision = viewModel.drawingRevision
             coord.lastShowInk = showInk
             coord.isProgrammaticUpdate = false
+            if didChangeChapter {
+                coord.lastChapterKey = chapterKey
+                canvas.setContentOffset(.zero, animated: false)
+            }
             Task { @MainActor in
                 if viewModel.canUndo { viewModel.canUndo = false }
                 if viewModel.canRedo { viewModel.canRedo = false }
@@ -152,6 +154,11 @@ public struct BibleScrollableInkView<Background: View, Overlay: View>: UIViewRep
         }
 
         coord.relayoutIfNeeded()
+        if didChangeChapter {
+            DispatchQueue.main.async { [weak coord] in
+                coord?.relayoutIfNeeded()
+            }
+        }
 
         // Programmatic zoom changes from bottom bar zoom menu
         let targetZoom = viewModel.journalZoomScale
@@ -176,6 +183,7 @@ public struct BibleScrollableInkView<Background: View, Overlay: View>: UIViewRep
         var lastToolKey: String = ""
         var lastPencilOnly: Bool = true
         var lastShowInk: Bool = true
+        var lastChapterKey: String = ""
 
         init(viewModel: BibleWorkspaceViewModel) {
             self.viewModel = viewModel
@@ -219,9 +227,14 @@ public struct BibleScrollableInkView<Background: View, Overlay: View>: UIViewRep
             }
 
             let fitting = bgHost.sizeThatFits(in: CGSize(width: liveWidth, height: .greatestFiniteMagnitude))
-            let targetHeight = max(fitting.height, canvas.bounds.height, 900)
+            let verseBottom = (viewModel.currentVerseFrames.values.map(\.maxY).max() ?? 0) + 180
+            let targetHeight = max(fitting.height, verseBottom, canvas.bounds.height, 900)
 
-            if abs(lastAppliedWidth - liveWidth) > 0.5 || abs(lastAppliedHeight - targetHeight) > 2 {
+            let desiredContentSize = CGSize(width: liveWidth * scale, height: targetHeight * scale)
+            let frameChanged = abs(lastAppliedWidth - liveWidth) > 0.5 || abs(lastAppliedHeight - targetHeight) > 2
+            let contentSizeDrifted = abs(canvas.contentSize.width - desiredContentSize.width) > 1 || abs(canvas.contentSize.height - desiredContentSize.height) > 1
+
+            if frameChanged {
                 bgHost.view.transform = .identity
                 bgHost.view.frame = CGRect(x: 0, y: 0, width: liveWidth, height: targetHeight)
 
@@ -239,9 +252,11 @@ public struct BibleScrollableInkView<Background: View, Overlay: View>: UIViewRep
 
                 syncChildTransforms(scale: scale)
 
-                canvas.contentSize = CGSize(width: liveWidth * scale, height: targetHeight * scale)
                 lastAppliedWidth = liveWidth
                 lastAppliedHeight = targetHeight
+            }
+            if frameChanged || contentSizeDrifted {
+                canvas.contentSize = desiredContentSize
             }
             canvas.showsHorizontalScrollIndicator = scale > 1.01
         }

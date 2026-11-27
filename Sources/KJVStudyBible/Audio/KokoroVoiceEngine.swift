@@ -3,6 +3,79 @@ import Foundation
 import SherpaOnnxC
 import SwiftUI
 
+// MARK: - Neural Voice Packs (Fast Piper/VITS + Kokoro-82M Studio)
+
+public enum NeuralPackID: String, CaseIterable, Identifiable, Sendable {
+    case piperRyan = "piper-ryan-en"
+    case piperLessac = "piper-lessac-en"
+    case kokoro = "kokoro-en-v0_19"
+
+    public var id: String { rawValue }
+
+    public var isVits: Bool {
+        switch self {
+        case .piperRyan, .piperLessac: return true
+        case .kokoro: return false
+        }
+    }
+
+    public var title: String {
+        switch self {
+        case .piperRyan: return "Ryan · Fast Neural Narrator (US Male)"
+        case .piperLessac: return "Lessac · Fast Neural Narrator (US Female)"
+        case .kokoro: return "Kokoro-82M Studio Pack (11 Voices)"
+        }
+    }
+
+    public var shortName: String {
+        switch self {
+        case .piperRyan: return "Ryan"
+        case .piperLessac: return "Lessac"
+        case .kokoro: return "Kokoro-82M"
+        }
+    }
+
+    public var badgeText: String {
+        switch self {
+        case .piperRyan, .piperLessac: return "Fast · Instant"
+        case .kokoro: return "11 Voices · M-Series"
+        }
+    }
+
+    public var summary: String {
+        switch self {
+        case .piperRyan:
+            return "Warm, rich American male narrator (Piper VITS). Instant zero-pause verse playback on all iPads, 100% offline."
+        case .piperLessac:
+            return "Clear, natural American female narrator (Piper VITS). Instant zero-pause verse playback on all iPads, 100% offline."
+        case .kokoro:
+            return "11 studio US & UK voices (Michael, George, Bella, Emma & more). Heavier 82M model — fastest on M1/M2/M4 iPads."
+        }
+    }
+
+    public var approxDownloadSize: String {
+        switch self {
+        case .piperRyan, .piperLessac: return "~60 MB"
+        case .kokoro: return "~95 MB"
+        }
+    }
+
+    public var requiredFiles: [String] {
+        if isVits {
+            return ["model.onnx", "tokens.txt", "lexicon-en-us.txt"]
+        }
+        return ["model.int8.onnx", "voices.bin", "tokens.txt", "lexicon-en-us.txt"]
+    }
+
+    public var voiceIdentifierPrefix: String {
+        switch self {
+        case .piperRyan: return "piper:ryan"
+        case .piperLessac: return "piper:lessac"
+        case .kokoro: return "kokoro:"
+        }
+    }
+}
+
 // MARK: - Kokoro-82M Studio Neural Voice Definitions (11 Built-In Speakers)
 
 public struct KokoroVoice: Identifiable, Hashable, Sendable {
@@ -15,7 +88,6 @@ public struct KokoroVoice: Identifiable, Hashable, Sendable {
     public var id: String { "kokoro:\(sid)" }
     public var fullLabel: String { "\(displayName) (\(accent))" }
 
-    /// All 11 English studio voices in `kokoro-int8-en-v0_19`.
     public static let allVoices: [KokoroVoice] = [
         KokoroVoice(sid: 6, code: "am_michael", displayName: "Michael", accent: "US Male", styleHint: "Warm & resonant"),
         KokoroVoice(sid: 9, code: "bm_george", displayName: "George", accent: "UK Male", styleHint: "Classic KJV narrator"),
@@ -30,7 +102,7 @@ public struct KokoroVoice: Identifiable, Hashable, Sendable {
         KokoroVoice(sid: 0, code: "af", displayName: "Heart", accent: "US Female", styleHint: "Balanced studio"),
     ]
 
-    public static let defaultVoice: KokoroVoice = allVoices[0] // Michael
+    public static let defaultVoice: KokoroVoice = allVoices[0]
 
     public static func fromIdentifier(_ id: String) -> KokoroVoice? {
         allVoices.first(where: { $0.id == id })
@@ -39,7 +111,7 @@ public struct KokoroVoice: Identifiable, Hashable, Sendable {
 
 // MARK: - Voice Pack Remote Manifest
 
-private struct KokoroPackFileEntry: Codable, Sendable {
+private struct NeuralPackFileEntry: Codable, Sendable {
     let file: String
     let target: String
     let append: Bool
@@ -47,57 +119,98 @@ private struct KokoroPackFileEntry: Codable, Sendable {
     let compressedSize: Int
 }
 
-private struct KokoroPackManifest: Codable, Sendable {
+private struct NeuralPackManifest: Codable, Sendable {
     let id: String
     let title: String
     let version: Int
     let totalDownloadBytes: Int
     let totalDiskBytes: Int
-    let files: [KokoroPackFileEntry]
+    let files: [NeuralPackFileEntry]
 }
 
-// MARK: - Optional Downloadable Voice Pack Manager
+// MARK: - Engine Spec passed to background C synthesis thread
+
+public struct NeuralEngineSpec: Hashable, Sendable {
+    public let pack: NeuralPackID
+    public let modelPath: String
+    public let voicesPath: String
+    public let tokensPath: String
+    public let lexiconPath: String
+}
+
+// MARK: - Optional Downloadable Neural Voice Pack Manager
 
 @MainActor
 public final class KokoroVoiceManager: ObservableObject {
-    public static let baseURL = URL(string: "https://swordandquillbible.com/modules/voices/kokoro-en-v0_19/")!
+    public static let voicesBaseURL = URL(string: "https://swordandquillbible.com/modules/voices/")!
 
-    @Published public private(set) var isInstalled: Bool = false
-    @Published public private(set) var isDownloading: Bool = false
+    @Published public private(set) var installedPacks: Set<NeuralPackID> = []
+    @Published public private(set) var downloadingPack: NeuralPackID? = nil
     @Published public private(set) var downloadProgress: Double = 0.0
     @Published public private(set) var statusText: String? = nil
     @Published public private(set) var errorMessage: String? = nil
 
-    public let voiceDir: URL
+    public let voicesRootDir: URL
     private var downloadTask: Task<Void, Never>? = nil
 
-    public var modelPath: String { voiceDir.appendingPathComponent("model.int8.onnx").path }
-    public var voicesPath: String { voiceDir.appendingPathComponent("voices.bin").path }
-    public var tokensPath: String { voiceDir.appendingPathComponent("tokens.txt").path }
-    public var lexiconPath: String { voiceDir.appendingPathComponent("lexicon-en-us.txt").path }
+    public var isDownloading: Bool { downloadingPack != nil }
+    public var hasAnyNeuralVoice: Bool { !installedPacks.isEmpty }
+    public var isInstalled: Bool { installedPacks.contains(.kokoro) }
 
     public init() {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        self.voiceDir = appSupport.appendingPathComponent("KJVStudyBible/Voices/kokoro-en-v0_19", isDirectory: true)
+        self.voicesRootDir = appSupport.appendingPathComponent("KJVStudyBible/Voices", isDirectory: true)
         refreshInstallState()
+    }
+
+    public func packDir(for pack: NeuralPackID) -> URL {
+        voicesRootDir.appendingPathComponent(pack.rawValue, isDirectory: true)
+    }
+
+    public func isInstalled(_ pack: NeuralPackID) -> Bool {
+        installedPacks.contains(pack)
+    }
+
+    public func engineSpec(for pack: NeuralPackID) -> NeuralEngineSpec {
+        let dir = packDir(for: pack)
+        return NeuralEngineSpec(
+            pack: pack,
+            modelPath: dir.appendingPathComponent(pack.isVits ? "model.onnx" : "model.int8.onnx").path,
+            voicesPath: pack.isVits ? "" : dir.appendingPathComponent("voices.bin").path,
+            tokensPath: dir.appendingPathComponent("tokens.txt").path,
+            lexiconPath: dir.appendingPathComponent("lexicon-en-us.txt").path
+        )
+    }
+
+    /// Best installed neural pack for instant playback (prefers fast Piper VITS if installed).
+    public var preferredInstalledPack: NeuralPackID? {
+        if installedPacks.contains(.piperRyan) { return .piperRyan }
+        if installedPacks.contains(.piperLessac) { return .piperLessac }
+        if installedPacks.contains(.kokoro) { return .kokoro }
+        return nil
     }
 
     public func refreshInstallState() {
         let fm = FileManager.default
-        let required = ["model.int8.onnx", "voices.bin", "tokens.txt", "lexicon-en-us.txt"]
-        let allPresent = required.allSatisfy { name in
-            let p = voiceDir.appendingPathComponent(name).path
-            guard fm.fileExists(atPath: p),
-                  let attrs = try? fm.attributesOfItem(atPath: p),
-                  let sz = attrs[.size] as? Int64 else { return false }
-            return sz > 100
+        var found: Set<NeuralPackID> = []
+        for pack in NeuralPackID.allCases {
+            let dir = packDir(for: pack)
+            let ok = pack.requiredFiles.allSatisfy { name in
+                let p = dir.appendingPathComponent(name).path
+                guard fm.fileExists(atPath: p),
+                      let attrs = try? fm.attributesOfItem(atPath: p),
+                      let sz = attrs[.size] as? Int64 else { return false }
+                return sz > 100
+            }
+            if ok { found.insert(pack) }
         }
-        isInstalled = allPresent
+        installedPacks = found
     }
 
-    public var formattedDiskSize: String {
+    public func formattedDiskSize(for pack: NeuralPackID) -> String {
         let fm = FileManager.default
-        guard let items = try? fm.contentsOfDirectory(at: voiceDir, includingPropertiesForKeys: [.fileSizeKey]) else {
+        let dir = packDir(for: pack)
+        guard let items = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.fileSizeKey]) else {
             return "0 MB"
         }
         let total = items.reduce(Int64(0)) { sum, url in
@@ -107,47 +220,49 @@ public final class KokoroVoiceManager: ObservableObject {
         return String(format: "%.0f MB", Double(total) / 1_048_576.0)
     }
 
-    public func startDownload() {
-        guard !isDownloading else { return }
-        isDownloading = true
+    public func startDownload(_ pack: NeuralPackID) {
+        guard downloadingPack == nil else { return }
+        downloadingPack = pack
         downloadProgress = 0.0
         errorMessage = nil
-        statusText = "Fetching voice pack manifest…"
+        statusText = "Fetching \(pack.shortName) manifest…"
 
         downloadTask = Task { [weak self] in
             guard let self else { return }
-            await self.performDownload()
+            await self.performDownload(pack)
         }
     }
 
     public func cancelDownload() {
         downloadTask?.cancel()
         downloadTask = nil
-        isDownloading = false
+        downloadingPack = nil
         downloadProgress = 0.0
         statusText = nil
     }
 
-    public func removeVoicePack() {
-        cancelDownload()
-        try? FileManager.default.removeItem(at: voiceDir)
-        isInstalled = false
-        statusText = "Kokoro-82M voice pack removed."
+    public func removeVoicePack(_ pack: NeuralPackID) {
+        if downloadingPack == pack { cancelDownload() }
+        try? FileManager.default.removeItem(at: packDir(for: pack))
+        refreshInstallState()
+        statusText = "\(pack.shortName) removed."
     }
 
-    private func performDownload() async {
+    private func performDownload(_ pack: NeuralPackID) async {
         let fm = FileManager.default
-        let stagingDir = voiceDir.deletingLastPathComponent().appendingPathComponent("kokoro-staging", isDirectory: true)
+        let destDir = packDir(for: pack)
+        let stagingDir = voicesRootDir.appendingPathComponent("\(pack.rawValue)-staging", isDirectory: true)
+        let packBaseURL = Self.voicesBaseURL.appendingPathComponent(pack.rawValue, isDirectory: true)
 
         do {
-            let manifestURL = Self.baseURL.appendingPathComponent("manifest.json")
+            let manifestURL = packBaseURL.appendingPathComponent("manifest.json")
             let (manifestData, manifestResp) = try await URLSession.shared.data(from: manifestURL)
             if let http = manifestResp as? HTTPURLResponse, http.statusCode != 200 {
-                throw NSError(domain: "KokoroVoice", code: http.statusCode, userInfo: [
+                throw NSError(domain: "NeuralVoice", code: http.statusCode, userInfo: [
                     NSLocalizedDescriptionKey: "Voice pack server returned HTTP \(http.statusCode)."
                 ])
             }
-            let manifest = try JSONDecoder().decode(KokoroPackManifest.self, from: manifestData)
+            let manifest = try JSONDecoder().decode(NeuralPackManifest.self, from: manifestData)
 
             try? fm.removeItem(at: stagingDir)
             try fm.createDirectory(at: stagingDir, withIntermediateDirectories: true)
@@ -157,17 +272,17 @@ public final class KokoroVoiceManager: ObservableObject {
 
             for (index, entry) in manifest.files.enumerated() {
                 try Task.checkCancellation()
-                statusText = "Downloading part \(index + 1) of \(manifest.files.count)…"
+                statusText = "Downloading \(pack.shortName) (\(index + 1)/\(manifest.files.count))…"
 
-                let fileURL = Self.baseURL.appendingPathComponent(entry.file)
+                let fileURL = packBaseURL.appendingPathComponent(entry.file)
                 let (tempURL, resp) = try await URLSession.shared.download(from: fileURL)
                 if let http = resp as? HTTPURLResponse, http.statusCode != 200 {
-                    throw NSError(domain: "KokoroVoice", code: http.statusCode, userInfo: [
+                    throw NSError(domain: "NeuralVoice", code: http.statusCode, userInfo: [
                         NSLocalizedDescriptionKey: "Failed to download \(entry.file) (HTTP \(http.statusCode))."
                     ])
                 }
 
-                statusText = "Unpacking part \(index + 1) of \(manifest.files.count)…"
+                statusText = "Unpacking \(pack.shortName) (\(index + 1)/\(manifest.files.count))…"
                 let targetURL = stagingDir.appendingPathComponent(entry.target)
                 let rawSize = entry.rawSize
                 let shouldAppend = entry.append
@@ -191,22 +306,22 @@ public final class KokoroVoiceManager: ObservableObject {
             }
 
             try Task.checkCancellation()
-            try? fm.removeItem(at: voiceDir)
-            try fm.createDirectory(at: voiceDir.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try fm.moveItem(at: stagingDir, to: voiceDir)
+            try? fm.removeItem(at: destDir)
+            try fm.createDirectory(at: voicesRootDir, withIntermediateDirectories: true)
+            try fm.moveItem(at: stagingDir, to: destDir)
 
             downloadProgress = 1.0
-            isDownloading = false
+            downloadingPack = nil
             refreshInstallState()
-            statusText = isInstalled ? "Kokoro-82M Studio Voices installed (11 voices, 100% offline)." : nil
+            statusText = isInstalled(pack) ? "\(pack.shortName) installed (100% offline)." : nil
         } catch is CancellationError {
             try? fm.removeItem(at: stagingDir)
-            isDownloading = false
+            downloadingPack = nil
             downloadProgress = 0.0
             statusText = nil
         } catch {
             try? fm.removeItem(at: stagingDir)
-            isDownloading = false
+            downloadingPack = nil
             downloadProgress = 0.0
             statusText = nil
             errorMessage = error.localizedDescription
@@ -230,7 +345,7 @@ public final class KokoroVoiceManager: ObservableObject {
             }
         }
         guard decodedCount > 0 else {
-            throw NSError(domain: "KokoroVoice", code: -2, userInfo: [
+            throw NSError(domain: "NeuralVoice", code: -2, userInfo: [
                 NSLocalizedDescriptionKey: "Failed to decompress neural voice asset."
             ])
         }
@@ -239,7 +354,7 @@ public final class KokoroVoiceManager: ObservableObject {
     }
 }
 
-// MARK: - Thread-Safe Kokoro-82M On-Device Synthesis Engine (SherpaOnnxC)
+// MARK: - Thread-Safe On-Device Neural Synthesis Engine (Piper VITS + Kokoro-82M via SherpaOnnxC)
 
 public struct KokoroSynthesizedAudio: Sendable {
     public let samples: [Float]
@@ -247,9 +362,9 @@ public struct KokoroSynthesizedAudio: Sendable {
 }
 
 public final class KokoroSpeechEngine: @unchecked Sendable {
-    private let queue = DispatchQueue(label: "com.aaron.KJVStudyBible.kokoro", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "com.aaron.KJVStudyBible.neuraltts", qos: .userInitiated)
     private var ttsPtr: OpaquePointer? = nil
-    private var loadedModelPath: String? = nil
+    private var loadedSpec: NeuralEngineSpec? = nil
 
     public init() {}
 
@@ -260,13 +375,20 @@ public final class KokoroSpeechEngine: @unchecked Sendable {
         }
     }
 
+    public func prewarm(spec: NeuralEngineSpec) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.ensureLoaded(spec: spec)
+        }
+    }
+
     public func unload() {
         queue.async { [weak self] in
             guard let self else { return }
             if let ptr = self.ttsPtr {
                 SherpaOnnxDestroyOfflineTts(ptr)
                 self.ttsPtr = nil
-                self.loadedModelPath = nil
+                self.loadedSpec = nil
             }
         }
     }
@@ -275,10 +397,7 @@ public final class KokoroSpeechEngine: @unchecked Sendable {
         text: String,
         speakerId: Int32,
         speed: Float,
-        modelPath: String,
-        voicesPath: String,
-        tokensPath: String,
-        lexiconPath: String
+        spec: NeuralEngineSpec
     ) async -> KokoroSynthesizedAudio? {
         await withCheckedContinuation { continuation in
             queue.async { [weak self] in
@@ -286,35 +405,22 @@ public final class KokoroSpeechEngine: @unchecked Sendable {
                     continuation.resume(returning: nil)
                     return
                 }
-                if self.ttsPtr == nil || self.loadedModelPath != modelPath {
-                    if let existing = self.ttsPtr {
-                        SherpaOnnxDestroyOfflineTts(existing)
-                        self.ttsPtr = nil
-                    }
-                    self.ttsPtr = Self.createTts(
-                        modelPath: modelPath,
-                        voicesPath: voicesPath,
-                        tokensPath: tokensPath,
-                        lexiconPath: lexiconPath
-                    )
-                    self.loadedModelPath = self.ttsPtr != nil ? modelPath : nil
-                }
-
+                self.ensureLoaded(spec: spec)
                 guard let tts = self.ttsPtr else {
                     continuation.resume(returning: nil)
                     return
                 }
 
-                let cleaned = Self.normalizeForKokoro(text)
+                let cleaned = Self.normalizeText(text)
                 guard !cleaned.isEmpty else {
                     continuation.resume(returning: nil)
                     return
                 }
 
                 var genConfig = SherpaOnnxGenerationConfig()
-                genConfig.sid = speakerId
+                genConfig.sid = spec.pack.isVits ? 0 : speakerId
                 genConfig.speed = max(0.5, min(2.0, speed))
-                genConfig.silence_scale = 0.22
+                genConfig.silence_scale = 0.20
 
                 let audioPtr = cleaned.withCString { cText in
                     withUnsafePointer(to: &genConfig) { cfgPtr in
@@ -341,31 +447,58 @@ public final class KokoroSpeechEngine: @unchecked Sendable {
         }
     }
 
-    private static func createTts(
-        modelPath: String,
-        voicesPath: String,
-        tokensPath: String,
-        lexiconPath: String
-    ) -> OpaquePointer? {
-        var config = SherpaOnnxOfflineTtsConfig()
-        config.model.num_threads = 2
-        config.model.debug = 0
-        config.model.kokoro.length_scale = 1.0
-        config.max_num_sentences = 2
-        config.silence_scale = 0.22
+    private func ensureLoaded(spec: NeuralEngineSpec) {
+        if ttsPtr != nil && loadedSpec == spec { return }
+        if let existing = ttsPtr {
+            SherpaOnnxDestroyOfflineTts(existing)
+            ttsPtr = nil
+            loadedSpec = nil
+        }
+        ttsPtr = Self.createTts(spec: spec)
+        loadedSpec = ttsPtr != nil ? spec : nil
+    }
 
-        return modelPath.withCString { cModel in
-            voicesPath.withCString { cVoices in
-                tokensPath.withCString { cTokens in
-                    lexiconPath.withCString { cLexicon in
+    private static func createTts(spec: NeuralEngineSpec) -> OpaquePointer? {
+        var config = SherpaOnnxOfflineTtsConfig()
+        config.model.num_threads = 4
+        config.model.debug = 0
+        config.max_num_sentences = 1
+        config.silence_scale = 0.20
+
+        if spec.pack.isVits {
+            config.model.vits.noise_scale = 0.667
+            config.model.vits.noise_scale_w = 0.8
+            config.model.vits.length_scale = 1.0
+            return spec.modelPath.withCString { cModel in
+                spec.tokensPath.withCString { cTokens in
+                    spec.lexiconPath.withCString { cLexicon in
                         "cpu".withCString { cProvider in
                             config.model.provider = cProvider
-                            config.model.kokoro.model = cModel
-                            config.model.kokoro.voices = cVoices
-                            config.model.kokoro.tokens = cTokens
-                            config.model.kokoro.lexicon = cLexicon
+                            config.model.vits.model = cModel
+                            config.model.vits.tokens = cTokens
+                            config.model.vits.lexicon = cLexicon
                             return withUnsafePointer(to: &config) { cfgPtr in
                                 SherpaOnnxCreateOfflineTts(cfgPtr)
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            config.model.kokoro.length_scale = 1.0
+            return spec.modelPath.withCString { cModel in
+                spec.voicesPath.withCString { cVoices in
+                    spec.tokensPath.withCString { cTokens in
+                        spec.lexiconPath.withCString { cLexicon in
+                            "cpu".withCString { cProvider in
+                                config.model.provider = cProvider
+                                config.model.kokoro.model = cModel
+                                config.model.kokoro.voices = cVoices
+                                config.model.kokoro.tokens = cTokens
+                                config.model.kokoro.lexicon = cLexicon
+                                return withUnsafePointer(to: &config) { cfgPtr in
+                                    SherpaOnnxCreateOfflineTts(cfgPtr)
+                                }
                             }
                         }
                     }
@@ -374,8 +507,7 @@ public final class KokoroSpeechEngine: @unchecked Sendable {
         }
     }
 
-    /// Light KJV text normalization so Kokoro reads smoothly (strips pilcrow ¶, brackets, etc.).
-    private static func normalizeForKokoro(_ text: String) -> String {
+    private static func normalizeText(_ text: String) -> String {
         text
             .replacingOccurrences(of: "¶", with: "")
             .replacingOccurrences(of: "[", with: "")
