@@ -23,7 +23,15 @@ public final class PassthroughPKCanvasView: PKCanvasView {
     private func commonSetup() {
         backgroundColor = .clear
         isOpaque = false
+        clipsToBounds = true
         isScrollEnabled = false
+        minimumZoomScale = 1.0
+        maximumZoomScale = 1.0
+        bouncesZoom = false
+        bounces = false
+        alwaysBounceVertical = false
+        alwaysBounceHorizontal = false
+        isMultipleTouchEnabled = false
         contentInsetAdjustmentBehavior = .never
         automaticallyAdjustsScrollIndicatorInsets = false
         contentInset = .zero
@@ -48,10 +56,12 @@ public final class PassthroughPKCanvasView: PKCanvasView {
 
     public override func layoutSubviews() {
         super.layoutSubviews()
+        // Never mutate UIScrollView geometry while Apple Pencil is actively stroking!
+        let strokeState = drawingGestureRecognizer.state
+        guard strokeState != .began && strokeState != .changed else { return }
         if contentSize != bounds.size { contentSize = bounds.size }
         if contentInset != .zero { contentInset = .zero }
         if contentOffset != .zero { contentOffset = .zero }
-        suppressPencilKitEditMenu()
     }
 
     public func suppressPencilKitEditMenu() {
@@ -104,12 +114,15 @@ public struct UnifiedBibleCanvas: UIViewRepresentable {
     public func makeUIView(context: Context) -> PassthroughPKCanvasView {
         let canvas = PassthroughPKCanvasView()
         canvas.delegate = context.coordinator
+        let initialPolicy: PKCanvasViewDrawingPolicy = viewModel.pencilOnly ? .pencilOnly : .anyInput
         canvas.drawing = viewModel.chapterDrawing
         canvas.tool = viewModel.activePKTool
-        canvas.drawingPolicy = viewModel.pencilOnly ? .pencilOnly : .anyInput
+        canvas.drawingPolicy = initialPolicy
         canvas.onFingerTap = onFingerTapPoint
         context.coordinator.canvas = canvas
         context.coordinator.appliedRevision = viewModel.drawingRevision
+        context.coordinator.lastToolKey = currentToolKey()
+        context.coordinator.lastPencilOnly = viewModel.pencilOnly
 
         viewModel.onUndoRequest = { [weak canvas] in
             canvas?.undoManager?.undo()
@@ -120,9 +133,20 @@ public struct UnifiedBibleCanvas: UIViewRepresentable {
         return canvas
     }
 
+    private func currentToolKey() -> String {
+        "\(viewModel.selectedTool.rawValue)|\(viewModel.selectedColor.hex)|\(viewModel.strokeWidth)|\(viewModel.inkOpacity)"
+    }
+
     public func updateUIView(_ canvas: PassthroughPKCanvasView, context: Context) {
-        canvas.tool = viewModel.activePKTool
-        canvas.drawingPolicy = viewModel.pencilOnly ? .pencilOnly : .anyInput
+        let toolKey = currentToolKey()
+        if context.coordinator.lastToolKey != toolKey {
+            canvas.tool = viewModel.activePKTool
+            context.coordinator.lastToolKey = toolKey
+        }
+        if context.coordinator.lastPencilOnly != viewModel.pencilOnly {
+            canvas.drawingPolicy = viewModel.pencilOnly ? .pencilOnly : .anyInput
+            context.coordinator.lastPencilOnly = viewModel.pencilOnly
+        }
         canvas.onFingerTap = onFingerTapPoint
 
         if context.coordinator.appliedRevision != viewModel.drawingRevision {
@@ -132,8 +156,8 @@ public struct UnifiedBibleCanvas: UIViewRepresentable {
             context.coordinator.appliedRevision = viewModel.drawingRevision
             context.coordinator.isProgrammaticUpdate = false
             Task { @MainActor in
-                viewModel.canUndo = false
-                viewModel.canRedo = false
+                if viewModel.canUndo { viewModel.canUndo = false }
+                if viewModel.canRedo { viewModel.canRedo = false }
             }
         }
     }
@@ -143,6 +167,8 @@ public struct UnifiedBibleCanvas: UIViewRepresentable {
         weak var canvas: PassthroughPKCanvasView?
         var appliedRevision: Int = -1
         var isProgrammaticUpdate: Bool = false
+        var lastToolKey: String = ""
+        var lastPencilOnly: Bool = true
 
         init(viewModel: BibleWorkspaceViewModel) {
             self.viewModel = viewModel

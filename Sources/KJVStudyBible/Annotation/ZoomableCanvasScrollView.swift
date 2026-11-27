@@ -50,15 +50,26 @@ public struct ZoomableCanvasScrollView<Content: View>: UIViewRepresentable {
         scrollView.contentInsetAdjustmentBehavior = .never
         scrollView.automaticallyAdjustsScrollIndicatorInsets = false
         scrollView.delaysContentTouches = false
-        // Finger-only pan/scroll so Apple Pencil NEVER scrolls when writing
-        scrollView.panGestureRecognizer.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        scrollView.canCancelContentTouches = false
+        // Finger-only pan & pinch so Palm + Apple Pencil NEVER triggers pinch-to-zoom or scroll while writing!
+        let directOnly = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        scrollView.panGestureRecognizer.allowedTouchTypes = directOnly
+        scrollView.pinchGestureRecognizer?.allowedTouchTypes = directOnly
+
+        let zoomContainer = UIView()
+        zoomContainer.backgroundColor = .clear
+        zoomContainer.translatesAutoresizingMaskIntoConstraints = true
+        scrollView.addSubview(zoomContainer)
 
         let host = UIHostingController(rootView: content)
         host.safeAreaRegions = []
+        host.sizingOptions = []
         host.view.backgroundColor = .clear
         host.view.translatesAutoresizingMaskIntoConstraints = true
-        scrollView.addSubview(host.view)
+        host.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        zoomContainer.addSubview(host.view)
 
+        context.coordinator.zoomContainer = zoomContainer
         context.coordinator.hostingController = host
         context.coordinator.scrollView = scrollView
         context.coordinator.requestedWidth = contentWidth
@@ -93,6 +104,7 @@ public struct ZoomableCanvasScrollView<Content: View>: UIViewRepresentable {
 
     public final class Coordinator: NSObject, UIScrollViewDelegate {
         @Binding var zoomScale: CGFloat
+        var zoomContainer: UIView?
         var hostingController: UIHostingController<Content>?
         weak var scrollView: UIScrollView?
         var isUserZooming: Bool = false
@@ -118,12 +130,12 @@ public struct ZoomableCanvasScrollView<Content: View>: UIViewRepresentable {
         }
 
         func relayoutIfNeeded() {
-            guard let host = hostingController, let scrollView, !isUserZooming else { return }
+            guard let host = hostingController, let container = zoomContainer, let scrollView, !isUserZooming else { return }
             let liveWidth = scrollView.bounds.width > 100 ? scrollView.bounds.width : requestedWidth
             guard liveWidth > 100 else { return }
 
             let currentScale = scrollView.zoomScale
-            // While zoomed in (> 1.01x), let UIScrollView own host.view's transform & frame
+            // While zoomed in (> 1.01x), let UIScrollView own container's transform & frame
             // unless the viewport width itself changed (e.g. panel toggle or rotation).
             if currentScale > 1.01 && abs(lastAppliedWidth - liveWidth) <= 0.5 {
                 scrollView.showsHorizontalScrollIndicator = true
@@ -134,11 +146,12 @@ public struct ZoomableCanvasScrollView<Content: View>: UIViewRepresentable {
             let targetHeight = max(fitting.height, scrollView.bounds.height, 900)
 
             if abs(lastAppliedWidth - liveWidth) > 0.5 || abs(lastAppliedHeight - targetHeight) > 2 {
-                host.view.transform = .identity
-                host.view.frame = CGRect(x: 0, y: 0, width: liveWidth, height: targetHeight)
+                container.transform = .identity
+                container.frame = CGRect(x: 0, y: 0, width: liveWidth, height: targetHeight)
+                host.view.frame = container.bounds
                 if currentScale > 1.01 {
-                    host.view.transform = CGAffineTransform(scaleX: currentScale, y: currentScale)
-                    host.view.frame.origin = .zero
+                    container.transform = CGAffineTransform(scaleX: currentScale, y: currentScale)
+                    container.frame.origin = .zero
                 }
                 scrollView.contentSize = CGSize(
                     width: currentScale <= 1.01 ? liveWidth : liveWidth * currentScale,
@@ -154,7 +167,7 @@ public struct ZoomableCanvasScrollView<Content: View>: UIViewRepresentable {
         }
 
         public func viewForZooming(in scrollView: UIScrollView) -> UIView? {
-            hostingController?.view
+            zoomContainer
         }
 
         public func scrollViewWillBeginZooming(_ scrollView: UIScrollView, with view: UIView?) {

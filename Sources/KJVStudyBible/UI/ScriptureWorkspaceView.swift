@@ -4,6 +4,8 @@ import UniformTypeIdentifiers
 public struct ScriptureWorkspaceView: View {
     @ObservedObject var viewModel: BibleWorkspaceViewModel
     @State private var verseFrames: [Int: CGRect] = [:]
+    @State private var isDraggingLeftDivider: Bool = false
+    @State private var dragStartLeftWidth: CGFloat? = nil
     @State private var unifiedNaturalHeight: CGFloat = 1200
 
     public var body: some View {
@@ -170,6 +172,15 @@ public struct ScriptureWorkspaceView: View {
                     }
                 }
 
+                if viewModel.isAudioBarVisible && viewModel.audioPlayer.isActive {
+                    BibleAudioMiniBar(player: viewModel.audioPlayer, theme: viewModel.theme) {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            viewModel.stopChapterAudio()
+                        }
+                    }
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+
                 BottomUtilityBar(viewModel: viewModel)
             }
         }
@@ -212,11 +223,29 @@ public struct ScriptureWorkspaceView: View {
         .sheet(isPresented: $viewModel.showStudyDashboard) {
             StudyDashboardSheet(viewModel: viewModel)
         }
+        .sheet(isPresented: $viewModel.showReadingPlans) {
+            ReadingPlansSheet(viewModel: viewModel)
+        }
+        .sheet(isPresented: $viewModel.showMemoryDrills) {
+            MemoryDrillsSheet(viewModel: viewModel)
+        }
+        .sheet(isPresented: $viewModel.showSupportSheet) {
+            SupportSwordAndQuillSheet(store: viewModel.storeManager, theme: viewModel.theme)
+        }
+        .sheet(isPresented: $viewModel.showLibraryManager) {
+            LibraryManagerSheet(viewModel: viewModel, moduleManager: viewModel.moduleManager)
+        }
+        .sheet(isPresented: $viewModel.showHandednessOnboarding) {
+            HandednessOnboardingSheet(viewModel: viewModel)
+        }
         .sheet(isPresented: $viewModel.showNewStudySheet) {
             NewStudySheet(viewModel: viewModel)
         }
         .sheet(isPresented: $viewModel.showStudyTrailSheet) {
             StudyTrailSheet(viewModel: viewModel)
+        }
+        .sheet(isPresented: $viewModel.showStudyLibrarySheet) {
+            StudyLibrarySheet(viewModel: viewModel)
         }
         .sheet(isPresented: $viewModel.showAddStudyLinkSheet) {
             StudyMarginLinkEditorSheet(viewModel: viewModel, existingLink: nil)
@@ -249,8 +278,18 @@ public struct ScriptureWorkspaceView: View {
         // magnifies the exact same unchanging coordinate space and Apple Pencil ink stays 100% pixel-locked!
         let useDockedLeftPanel = totalWidth >= 860
         let leftDrawerWidth: CGFloat = min(320, max(260, totalWidth * 0.36))
-        let dockedLeftWidth: CGFloat = (useDockedLeftPanel && viewModel.showReferencePanel) ? min(300, max(240, totalWidth * 0.27)) : 0
-        let leftDividerWidth: CGFloat = dockedLeftWidth > 0 ? 1 : 0
+        let defaultLeftWidth: CGFloat = min(300, max(240, totalWidth * 0.27))
+        let minLeftWidth: CGFloat = 220
+        let maxLeftWidth: CGFloat = max(340, min(580, totalWidth * 0.54))
+        // In Journaling Mode (showJournalPanel == true), lock the left panel to its canonical default width
+        // so Apple Pencil ink, margin clips, and stickers stay 100% pixel-aligned.
+        // In Study Mode (showJournalPanel == false), allow freely dragging the divider wider/narrower!
+        let canResizeLeftPanel = useDockedLeftPanel && viewModel.showReferencePanel && !viewModel.showJournalPanel
+        let resolvedLeftWidth: CGFloat = (canResizeLeftPanel && viewModel.leftPanelWidth > 0)
+            ? min(maxLeftWidth, max(minLeftWidth, viewModel.leftPanelWidth))
+            : defaultLeftWidth
+        let dockedLeftWidth: CGFloat = (useDockedLeftPanel && viewModel.showReferencePanel) ? resolvedLeftWidth : 0
+        let leftDividerWidth: CGFloat = dockedLeftWidth > 0 ? (canResizeLeftPanel ? 12 : 1) : 0
         let remainingWidth = max(280, totalWidth - dockedLeftWidth - leftDividerWidth)
         let innerDividerWidth: CGFloat = viewModel.showJournalPanel ? 1 : 0
         let usableInnerWidth = max(260, remainingWidth - innerDividerWidth)
@@ -263,42 +302,72 @@ public struct ScriptureWorkspaceView: View {
         let journalWidth: CGFloat = viewModel.showJournalPanel ? max(140, usableInnerWidth - scriptureWidth) : 0
         let unifiedWidth: CGFloat = remainingWidth
 
-        ZStack(alignment: .leading) {
+        let isLeftHanded = viewModel.isLeftHandedLayout
+
+        ZStack(alignment: isLeftHanded ? .trailing : .leading) {
             HStack(alignment: .top, spacing: 0) {
-                // DOCKED LEFT PANEL (Wide iPad Landscape)
-                if useDockedLeftPanel && viewModel.showReferencePanel {
+                // DOCKED STUDY DESK ON LEFT (Right-Handed default)
+                if !isLeftHanded && useDockedLeftPanel && viewModel.showReferencePanel {
                     LeftStudyDeskView(viewModel: viewModel)
                         .frame(width: dockedLeftWidth)
                         .frame(maxHeight: .infinity)
                         .clipped()
-                    dashedVerticalDivider
+
+                    if canResizeLeftPanel {
+                        leftPanelResizeDivider(
+                            currentWidth: dockedLeftWidth,
+                            minWidth: minLeftWidth,
+                            maxWidth: maxLeftWidth,
+                            invertDrag: false
+                        )
+                    } else {
+                        dashedVerticalDivider
+                    }
                 }
 
-                // UNIFIED ZOOMABLE WRITING WORKSPACE: Center KJV Scripture + Right Journal Margin
-                ZoomableCanvasScrollView(zoomScale: $viewModel.journalZoomScale, contentWidth: unifiedWidth) {
-                    ZStack(alignment: .topLeading) {
+                // UNIFIED WRITING WORKSPACE: Viewport-sized native PKCanvasView scrolling Scripture + Journal Margin
+                // Eliminates Metal's 8192px texture clamp on long chapters (John 1, Psalm 119, etc.) while keeping 1x–3.5x zoom!
+                BibleScrollableInkView(
+                    viewModel: viewModel,
+                    contentWidth: unifiedWidth,
+                    onFingerTapPoint: { tapPoint in
+                        handleFingerTapOnCanvas(tapPoint)
+                    },
+                    background: {
                         HStack(alignment: .top, spacing: 0) {
                             if !viewModel.showJournalPanel {
                                 Spacer(minLength: 0)
                             }
 
+                            if isLeftHanded && viewModel.showJournalPanel {
+                                journalMarginColumn(width: journalWidth)
+                                dashedVerticalDivider
+                            }
+
                             scriptureColumn(width: scriptureWidth)
 
-                            if viewModel.showJournalPanel {
+                            if !isLeftHanded && viewModel.showJournalPanel {
                                 dashedVerticalDivider
                                 journalMarginColumn(width: journalWidth)
-                            } else {
+                            } else if !viewModel.showJournalPanel {
                                 Spacer(minLength: 0)
                             }
                         }
-
-                        // Unified Apple Pencil Canvas (hidden in Reading Mode unless toggled on; ink preserved!)
-                        if viewModel.shouldShowInkOverlay {
-                            UnifiedBibleCanvas(viewModel: viewModel) { tapPoint in
-                                handleFingerTapOnCanvas(tapPoint)
-                            }
-
-                            // Draggable Pinned Reference Chips — uses .offset() so hit-box is ONLY the tiny pill!
+                        .frame(width: unifiedWidth, alignment: .topLeading)
+                        .coordinateSpace(name: "UnifiedCanvasSpace")
+                        .onPreferenceChange(VerseFramePreferenceKey.self) { frames in
+                            verseFrames = frames
+                            let realVerses = frames.filter { $0.key > 0 }
+                            viewModel.updateLayoutForInkReflow(
+                                verseFrames: realVerses,
+                                scriptureWidth: scriptureWidth,
+                                canvasWidth: unifiedWidth
+                            )
+                        }
+                    },
+                    overlay: {
+                        ZStack(alignment: .topLeading) {
+                            // Draggable Pinned Reference Chips
                             ForEach(viewModel.pinnedReferences) { pin in
                                 DraggableReferenceChip(
                                     pin: pin,
@@ -308,7 +377,7 @@ public struct ScriptureWorkspaceView: View {
                                 )
                             }
 
-                            // Draggable Movable Study Clip Cards (trimmed excerpts + editable personal notes!)
+                            // Draggable Movable Study Clip Cards
                             ForEach(viewModel.journalClips) { clip in
                                 DraggableClipCard(
                                     clip: clip,
@@ -318,7 +387,7 @@ public struct ScriptureWorkspaceView: View {
                                 )
                             }
 
-                            // Draggable Permanent Study Link + Margin Note Cards (links Bible ink back to a Study!)
+                            // Draggable Permanent Study Link Cards
                             ForEach(viewModel.chapterStudyLinks) { link in
                                 DraggableStudyLinkCard(
                                     link: link,
@@ -333,7 +402,7 @@ public struct ScriptureWorkspaceView: View {
                                 )
                             }
 
-                            // Draggable, Resizable, Rotatable Stickers on Bible & Margin Canvas
+                            // Draggable, Resizable, Rotatable Stickers
                             ForEach(viewModel.chapterStickers) { placed in
                                 if let item = viewModel.stickerItem(for: placed.stickerId) {
                                     DraggablePlacedSticker(
@@ -354,43 +423,204 @@ public struct ScriptureWorkspaceView: View {
                                 }
                             }
                         }
+                        .frame(width: unifiedWidth, alignment: .topLeading)
                     }
-                    .frame(width: unifiedWidth, alignment: .topLeading)
-                    .coordinateSpace(name: "UnifiedCanvasSpace")
-                    .onPreferenceChange(VerseFramePreferenceKey.self) { frames in
-                        verseFrames = frames
-                        let realVerses = frames.filter { $0.key > 0 }
-                        viewModel.updateLayoutForInkReflow(
-                            verseFrames: realVerses,
-                            scriptureWidth: scriptureWidth,
-                            canvasWidth: unifiedWidth
+                )
+                .frame(width: unifiedWidth)
+
+                // DOCKED STUDY DESK ON RIGHT (Left-Handed Mode)
+                if isLeftHanded && useDockedLeftPanel && viewModel.showReferencePanel {
+                    if canResizeLeftPanel {
+                        leftPanelResizeDivider(
+                            currentWidth: dockedLeftWidth,
+                            minWidth: minLeftWidth,
+                            maxWidth: maxLeftWidth,
+                            invertDrag: true
                         )
+                    } else {
+                        dashedVerticalDivider
                     }
+
+                    LeftStudyDeskView(viewModel: viewModel)
+                        .frame(width: dockedLeftWidth)
+                        .frame(maxHeight: .infinity)
+                        .clipped()
                 }
             }
 
-            // SLIDE-OVER LEFT STUDY DESK (iPad Portrait, Split View, Slide Over & Compact Widths)
-            // Uses side-by-side HStack so the dim backdrop NEVER overlaps or steals scroll gestures from LeftStudyDeskView!
+            // SLIDE-OVER STUDY DESK (iPad Portrait, Split View, Slide Over & Compact Widths)
             if !useDockedLeftPanel && viewModel.showReferencePanel {
                 HStack(spacing: 0) {
+                    if isLeftHanded {
+                        Color.black.opacity(0.24)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    viewModel.toggleReferencePanel()
+                                }
+                            }
+                    }
+
                     LeftStudyDeskView(viewModel: viewModel)
                         .frame(width: leftDrawerWidth)
                         .frame(maxHeight: .infinity)
                         .background(viewModel.theme.panelBackground)
                         .clipped()
-                        .shadow(color: .black.opacity(0.25), radius: 14, x: 4)
+                        .shadow(color: .black.opacity(0.25), radius: 14, x: isLeftHanded ? -4 : 4)
 
-                    Color.black.opacity(0.24)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            withAnimation(.easeInOut(duration: 0.2)) {
-                                viewModel.toggleReferencePanel()
+                    if !isLeftHanded {
+                        Color.black.opacity(0.24)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    viewModel.toggleReferencePanel()
+                                }
                             }
-                        }
+                    }
                 }
                 .zIndex(20)
-                .transition(.move(edge: .leading))
+                .transition(.move(edge: isLeftHanded ? .trailing : .leading))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func unifiedCanvasContent(isLeftHanded: Bool, scriptureWidth: CGFloat, journalWidth: CGFloat, unifiedWidth: CGFloat) -> some View {
+        ZStack(alignment: .topLeading) {
+            HStack(alignment: .top, spacing: 0) {
+                if !viewModel.showJournalPanel {
+                    Spacer(minLength: 0)
+                }
+
+                if isLeftHanded && viewModel.showJournalPanel {
+                    journalMarginColumn(width: journalWidth)
+                    dashedVerticalDivider
+                }
+
+                scriptureColumn(width: scriptureWidth)
+
+                if !isLeftHanded && viewModel.showJournalPanel {
+                    dashedVerticalDivider
+                    journalMarginColumn(width: journalWidth)
+                } else if !viewModel.showJournalPanel {
+                    Spacer(minLength: 0)
+                }
+            }
+
+            // Unified Apple Pencil Canvas (hidden in Reading Mode unless toggled on; ink preserved!)
+            if viewModel.shouldShowInkOverlay {
+                UnifiedBibleCanvas(viewModel: viewModel) { tapPoint in
+                    handleFingerTapOnCanvas(tapPoint)
+                }
+                .frame(width: unifiedWidth)
+
+                // Draggable Pinned Reference Chips — uses .offset() so hit-box is ONLY the tiny pill!
+                ForEach(viewModel.pinnedReferences) { pin in
+                    DraggableReferenceChip(
+                        pin: pin,
+                        theme: viewModel.theme,
+                        onTap: { viewModel.openPinnedReference(pin) },
+                        onMove: { newPt in viewModel.movePinnedReference(id: pin.id, to: newPt) }
+                    )
+                }
+
+                // Draggable Movable Study Clip Cards (trimmed excerpts + editable personal notes!)
+                ForEach(viewModel.journalClips) { clip in
+                    DraggableClipCard(
+                        clip: clip,
+                        theme: viewModel.theme,
+                        onTap: { viewModel.startEditClip(clip) },
+                        onMove: { newPt in viewModel.moveJournalClip(id: clip.id, to: newPt) }
+                    )
+                }
+
+                // Draggable Permanent Study Link + Margin Note Cards (links Bible ink back to a Study!)
+                ForEach(viewModel.chapterStudyLinks) { link in
+                    DraggableStudyLinkCard(
+                        link: link,
+                        theme: viewModel.theme,
+                        onTap: { viewModel.editingStudyMarginLink = link },
+                        onMove: { newPt in
+                            var next = link
+                            next.posX = Double(newPt.x)
+                            next.posY = Double(newPt.y)
+                            viewModel.updateStudyMarginLink(next)
+                        }
+                    )
+                }
+
+                // Draggable, Resizable, Rotatable Stickers on Bible & Margin Canvas
+                ForEach(viewModel.chapterStickers) { placed in
+                    if let item = viewModel.stickerItem(for: placed.stickerId) {
+                        DraggablePlacedSticker(
+                            placed: placed,
+                            item: item,
+                            isSelected: viewModel.selectedChapterStickerId == placed.id,
+                            theme: viewModel.theme,
+                            onSelect: {
+                                viewModel.selectedChapterStickerId = (viewModel.selectedChapterStickerId == placed.id) ? nil : placed.id
+                            },
+                            onUpdate: { updated in
+                                viewModel.updateChapterSticker(updated)
+                            },
+                            onDelete: {
+                                viewModel.removeChapterSticker(id: placed.id)
+                            }
+                        )
+                    }
+                }
+            }
+        }
+        .frame(width: unifiedWidth, alignment: .topLeading)
+        .coordinateSpace(name: "UnifiedCanvasSpace")
+        .onPreferenceChange(VerseFramePreferenceKey.self) { frames in
+            verseFrames = frames
+            let realVerses = frames.filter { $0.key > 0 }
+            viewModel.updateLayoutForInkReflow(
+                verseFrames: realVerses,
+                scriptureWidth: scriptureWidth,
+                canvasWidth: unifiedWidth
+            )
+        }
+    }
+
+    private func leftPanelResizeDivider(currentWidth: CGFloat, minWidth: CGFloat, maxWidth: CGFloat, invertDrag: Bool = false) -> some View {
+        ZStack {
+            Rectangle()
+                .fill(isDraggingLeftDivider ? viewModel.theme.accentBlue.opacity(0.6) : viewModel.theme.dividerColor)
+                .frame(width: isDraggingLeftDivider ? 2 : 1)
+
+            Capsule()
+                .fill(isDraggingLeftDivider ? viewModel.theme.accentBlue : viewModel.theme.secondaryText.opacity(0.42))
+                .frame(width: 4, height: 38)
+        }
+        .frame(width: 12)
+        .frame(maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .gesture(
+            DragGesture(minimumDistance: 2, coordinateSpace: .global)
+                .onChanged { value in
+                    if dragStartLeftWidth == nil {
+                        dragStartLeftWidth = currentWidth
+                        isDraggingLeftDivider = true
+                    }
+                    let base = dragStartLeftWidth ?? currentWidth
+                    let delta = invertDrag ? -value.translation.width : value.translation.width
+                    let next = min(maxWidth, max(minWidth, base + delta))
+                    viewModel.leftPanelWidth = next
+                }
+                .onEnded { _ in
+                    isDraggingLeftDivider = false
+                    dragStartLeftWidth = nil
+                    viewModel.persistLayoutPreferences()
+                }
+        )
+        .onTapGesture(count: 2) {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                viewModel.leftPanelWidth = 0
+                viewModel.persistLayoutPreferences()
             }
         }
     }
@@ -535,7 +765,9 @@ public struct ScriptureWorkspaceView: View {
             // Verses
             ForEach(viewModel.verses) { verse in
                 let highlight = viewModel.chapterHighlights[verse.verse]
-                let isSelectedVerse = (viewModel.popoverVerse?.id == verse.id) || (viewModel.studyVerse?.id == verse.id && viewModel.showReferencePanel)
+                let isSelectedVerse = (viewModel.popoverVerse?.id == verse.id)
+                    || (viewModel.studyVerse?.id == verse.id && viewModel.showReferencePanel)
+                    || (viewModel.isAudioBarVisible && viewModel.audioSpeakingVerseNumber == verse.verse)
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
                     if viewModel.showVerseNumbers {
                         let hasLinkedNote = !(viewModel.chapterNotesByVerse[verse.verse] ?? []).isEmpty
@@ -672,8 +904,9 @@ public struct ScriptureWorkspaceView: View {
     }
 
     private func formattedVerseText(_ verse: Verse) -> AttributedString {
-        let baseFont = Font.system(size: viewModel.fontSize, weight: .regular, design: .serif)
-        let italicFont = Font.system(size: viewModel.fontSize, weight: .regular, design: .serif).italic()
+        let design = viewModel.scriptureFontDesign.fontDesign
+        let baseFont = Font.system(size: viewModel.fontSize, weight: .regular, design: design)
+        let italicFont = Font.system(size: viewModel.fontSize, weight: .regular, design: design).italic()
         let baseColor = viewModel.theme.primaryText
         let redColor = viewModel.theme.redLetterColor
 
@@ -743,6 +976,17 @@ public struct ScriptureWorkspaceView: View {
 
     private var mainMenuOverlay: some View {
         HStack(spacing: 0) {
+            if viewModel.isLeftHandedLayout {
+                Color.black.opacity(0.32)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            viewModel.showMainMenu = false
+                        }
+                    }
+            }
+
             VStack(alignment: .leading, spacing: 0) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Sword & Quill Study Bible")
@@ -776,9 +1020,29 @@ public struct ScriptureWorkspaceView: View {
                             viewModel.showMainMenu = false
                             viewModel.showNotesSheet = true
                         }
+                        menuButton("Study Library (\(viewModel.studySessions.count))", icon: "books.vertical") {
+                            viewModel.showMainMenu = false
+                            viewModel.showStudyLibrarySheet = true
+                        }
+                        menuButton("Commentaries & Modules", icon: "square.stack.3d.up") {
+                            viewModel.showMainMenu = false
+                            viewModel.showLibraryManager = true
+                        }
                         menuButton("Reading History", icon: "clock.arrow.circlepath") {
                             viewModel.showMainMenu = false
                             viewModel.showHistorySheet = true
+                        }
+                        menuButton("Bible Reading Plans", icon: "calendar") {
+                            viewModel.showMainMenu = false
+                            viewModel.showReadingPlans = true
+                        }
+                        menuButton("Listen to Chapter (Audio)", icon: "speaker.wave.2") {
+                            viewModel.showMainMenu = false
+                            viewModel.startChapterAudio()
+                        }
+                        menuButton("Scripture Memory Drills", icon: "brain.head.profile") {
+                            viewModel.showMainMenu = false
+                            viewModel.showMemoryDrills = true
                         }
                         menuButton("Reading & Workspace View", icon: "slider.horizontal.3") {
                             viewModel.showMainMenu = false
@@ -798,6 +1062,10 @@ public struct ScriptureWorkspaceView: View {
                         menuButton("Study Dashboard & Backup", icon: "chart.bar.doc.horizontal") {
                             viewModel.showMainMenu = false
                             viewModel.showStudyDashboard = true
+                        }
+                        menuButton("Support & Classroom Pro", icon: "heart.text.square") {
+                            viewModel.showMainMenu = false
+                            viewModel.showSupportSheet = true
                         }
 
                         Divider().overlay(viewModel.theme.dividerColor).padding(.vertical, 2)
@@ -827,14 +1095,16 @@ public struct ScriptureWorkspaceView: View {
             .background(viewModel.theme.panelBackground)
             .shadow(radius: 16)
 
-            Color.black.opacity(0.32)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        viewModel.showMainMenu = false
+            if !viewModel.isLeftHandedLayout {
+                Color.black.opacity(0.32)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            viewModel.showMainMenu = false
+                        }
                     }
-                }
+            }
         }
         .zIndex(30)
         .transition(.opacity)

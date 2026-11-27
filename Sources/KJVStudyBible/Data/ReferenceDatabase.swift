@@ -1,20 +1,30 @@
 import Foundation
-import SQLite3
 
-private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+public enum ScriptureSearchMode: String, CaseIterable, Identifiable, Sendable {
+    case exact = "Exact"
+    case wordStartsWith = "Word Forms"
+    case contains = "Contains"
+    case meaning = "Meaning"
+
+    public var id: String { rawValue }
+}
 
 public final class ReferenceDatabase: @unchecked Sendable {
-    private var db: OpaquePointer?
+    private var db: MagQLite?
     private let lock = NSLock()
     private var bookMap: [Int: Book] = [:]
     private var cachedBooks: [Book] = []
 
     public init() {
-        let url = Self.locateDatabase()
-        if let url {
-            var handle: OpaquePointer?
-            if sqlite3_open_v2(url.path, &handle, SQLITE_OPEN_READONLY, nil) == SQLITE_OK {
-                self.db = handle
+        if let path = Self.locateOrStageDatabase() {
+            let cfg = MagQLiteConfig(
+                durability: "off",
+                pagedStorage: true,
+                bufferPoolPages: 512,
+                autoCheckpointFrames: 0
+            )
+            if let opened = try? MagQLite(path: path, config: cfg) {
+                self.db = opened
                 self.cachedBooks = loadAllBooksUnlocked()
                 for b in cachedBooks {
                     self.bookMap[b.id] = b
@@ -24,24 +34,62 @@ public final class ReferenceDatabase: @unchecked Sendable {
     }
 
     deinit {
-        if let db {
-            sqlite3_close(db)
-        }
+        db?.close()
     }
 
     public var isLoaded: Bool { db != nil }
 
-    private static func locateDatabase() -> URL? {
-        if let url = Bundle.module.url(forResource: "kjv_reference", withExtension: "sqlite") {
+    private static func bcKey(_ bookId: Int, _ chapter: Int) -> Int64 {
+        Int64(bookId * 1000 + chapter)
+    }
+
+    private static func bcvKey(_ bookId: Int, _ chapter: Int, _ verse: Int) -> Int64 {
+        Int64(bookId * 1_000_000 + chapter * 1000 + verse)
+    }
+
+    private static func locateBundledMql() -> URL? {
+        if let url = Bundle.module.url(forResource: "kjv_reference", withExtension: "mql") {
             return url
         }
-        if let url = Bundle.module.url(forResource: "kjv_reference", withExtension: "sqlite", subdirectory: "Resources") {
+        if let url = Bundle.module.url(forResource: "kjv_reference", withExtension: "mql", subdirectory: "Resources") {
             return url
         }
-        if let url = Bundle.main.url(forResource: "kjv_reference", withExtension: "sqlite") {
+        if let url = Bundle.main.url(forResource: "kjv_reference", withExtension: "mql") {
             return url
         }
         return nil
+    }
+
+    /// Ensures `kjv_reference.mql` and `kjv_reference.mql.pages` are staged in writable Application Support
+    /// (since iOS app bundles are read-only and MagQLite may open `.pages` / `.lock` read-write).
+    private static func locateOrStageDatabase() -> String? {
+        guard let bundleMql = locateBundledMql() else { return nil }
+        let bundlePages = URL(fileURLWithPath: bundleMql.path + ".pages")
+
+        let fm = FileManager.default
+        guard let appSup = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            return bundleMql.path
+        }
+        let dir = appSup.appendingPathComponent("KJVStudyBible/MagQLiteRef", isDirectory: true)
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        let dstMql = dir.appendingPathComponent("kjv_reference.mql")
+        let dstPages = dir.appendingPathComponent("kjv_reference.mql.pages")
+
+        let srcPagesSize = (try? fm.attributesOfItem(atPath: bundlePages.path)[.size] as? NSNumber)?.int64Value ?? -1
+        let dstPagesSize = (try? fm.attributesOfItem(atPath: dstPages.path)[.size] as? NSNumber)?.int64Value ?? -2
+
+        if !fm.fileExists(atPath: dstMql.path) || srcPagesSize != dstPagesSize {
+            try? fm.removeItem(at: dstMql)
+            try? fm.removeItem(at: dstPages)
+            try? fm.removeItem(atPath: dstMql.path + ".wal")
+            try? fm.removeItem(atPath: dstMql.path + ".lock")
+            try? fm.copyItem(at: bundleMql, to: dstMql)
+            if fm.fileExists(atPath: bundlePages.path) {
+                try? fm.copyItem(at: bundlePages, to: dstPages)
+            }
+        }
+        return dstMql.path
     }
 
     public func allBooks() -> [Book] {
@@ -58,125 +106,75 @@ public final class ReferenceDatabase: @unchecked Sendable {
 
     private func loadAllBooksUnlocked() -> [Book] {
         guard let db else { return [] }
-        var stmt: OpaquePointer?
-        let sql = "SELECT id, name, abbr, testament, chapter_count FROM books ORDER BY id"
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
-        defer { sqlite3_finalize(stmt) }
-        var result: [Book] = []
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            let id = Int(sqlite3_column_int(stmt, 0))
-            let name = Self.columnText(stmt, 1)
-            let abbr = Self.columnText(stmt, 2)
-            let testament = Self.columnText(stmt, 3)
-            let chCount = Int(sqlite3_column_int(stmt, 4))
-            result.append(Book(id: id, name: name, abbr: abbr, testament: testament, chapterCount: chCount))
+        let sql = "SELECT id, name, abbr, testament, chapter_count FROM books ORDER BY id;"
+        guard let res = try? db.query(sql) else { return [] }
+        return res.rows.map { row in
+            Book(
+                id: Int(row.int(at: 0) ?? 0),
+                name: row.string(at: 1) ?? "",
+                abbr: row.string(at: 2) ?? "",
+                testament: row.string(at: 3) ?? "",
+                chapterCount: Int(row.int(at: 4) ?? 0)
+            )
         }
-        return result
     }
 
     public func verses(bookId: Int, chapter: Int) -> [Verse] {
         lock.lock()
         defer { lock.unlock() }
         guard let db else { return [] }
-        var stmt: OpaquePointer?
-        let sql = "SELECT id, book_id, chapter, verse, text_plain, text_marked FROM verses WHERE book_id = ? AND chapter = ? ORDER BY verse"
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
-        defer { sqlite3_finalize(stmt) }
-        sqlite3_bind_int(stmt, 1, Int32(bookId))
-        sqlite3_bind_int(stmt, 2, Int32(chapter))
-        var result: [Verse] = []
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            result.append(Verse(
-                id: Int(sqlite3_column_int(stmt, 0)),
-                bookId: Int(sqlite3_column_int(stmt, 1)),
-                chapter: Int(sqlite3_column_int(stmt, 2)),
-                verse: Int(sqlite3_column_int(stmt, 3)),
-                text: Self.columnText(stmt, 4),
-                textMarked: Self.columnText(stmt, 5)
-            ))
-        }
-        return result
+        let sql = "SELECT id, book_id, chapter, verse, text_plain, text_marked FROM verses WHERE bc_key = ? ORDER BY verse;"
+        guard let res = try? db.queryParams(sql, params: [.int(Self.bcKey(bookId, chapter))]) else { return [] }
+        return res.rows.map(Self.readVerseRow)
     }
 
     public func verse(bookId: Int, chapter: Int, verse: Int) -> Verse? {
         lock.lock()
         defer { lock.unlock() }
         guard let db else { return nil }
-        var stmt: OpaquePointer?
-        let sql = "SELECT id, book_id, chapter, verse, text_plain, text_marked FROM verses WHERE book_id = ? AND chapter = ? AND verse = ? LIMIT 1"
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
-        defer { sqlite3_finalize(stmt) }
-        sqlite3_bind_int(stmt, 1, Int32(bookId))
-        sqlite3_bind_int(stmt, 2, Int32(chapter))
-        sqlite3_bind_int(stmt, 3, Int32(verse))
-        guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
-        return Verse(
-            id: Int(sqlite3_column_int(stmt, 0)),
-            bookId: Int(sqlite3_column_int(stmt, 1)),
-            chapter: Int(sqlite3_column_int(stmt, 2)),
-            verse: Int(sqlite3_column_int(stmt, 3)),
-            text: Self.columnText(stmt, 4),
-            textMarked: Self.columnText(stmt, 5)
-        )
+        let sql = "SELECT id, book_id, chapter, verse, text_plain, text_marked FROM verses WHERE bcv_key = ? LIMIT 1;"
+        guard let res = try? db.queryParams(sql, params: [.int(Self.bcvKey(bookId, chapter, verse))]),
+              let row = res.rows.first else { return nil }
+        return Self.readVerseRow(row)
     }
 
     public func verses(bookId: Int, chapter: Int, startVerse: Int, endVerse: Int) -> [Verse] {
         lock.lock()
         defer { lock.unlock() }
         guard let db else { return [] }
-        var stmt: OpaquePointer?
         let lo = max(1, min(startVerse, endVerse))
         let hi = max(startVerse, endVerse)
-        let sql = "SELECT id, book_id, chapter, verse, text_plain, text_marked FROM verses WHERE book_id = ? AND chapter = ? AND verse BETWEEN ? AND ? ORDER BY verse"
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
-        defer { sqlite3_finalize(stmt) }
-        sqlite3_bind_int(stmt, 1, Int32(bookId))
-        sqlite3_bind_int(stmt, 2, Int32(chapter))
-        sqlite3_bind_int(stmt, 3, Int32(lo))
-        sqlite3_bind_int(stmt, 4, Int32(hi))
-        var result: [Verse] = []
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            result.append(Verse(
-                id: Int(sqlite3_column_int(stmt, 0)),
-                bookId: Int(sqlite3_column_int(stmt, 1)),
-                chapter: Int(sqlite3_column_int(stmt, 2)),
-                verse: Int(sqlite3_column_int(stmt, 3)),
-                text: Self.columnText(stmt, 4),
-                textMarked: Self.columnText(stmt, 5)
-            ))
-        }
-        return result
+        let sql = "SELECT id, book_id, chapter, verse, text_plain, text_marked FROM verses WHERE bc_key = ? AND verse >= ? AND verse <= ? ORDER BY verse;"
+        guard let res = try? db.queryParams(sql, params: [
+            .int(Self.bcKey(bookId, chapter)),
+            .int(Int64(lo)),
+            .int(Int64(hi))
+        ]) else { return [] }
+        return res.rows.map(Self.readVerseRow)
     }
 
     public func interlinearWords(bookId: Int, chapter: Int, verse: Int) -> [InterlinearWord] {
         lock.lock()
         defer { lock.unlock() }
         guard let db else { return [] }
-        var stmt: OpaquePointer?
         let sql = """
             SELECT id, word_pos, original_text, translit, gloss, strongs_id, morph
             FROM interlinear_words
-            WHERE book_id = ? AND chapter = ? AND verse = ?
-            ORDER BY word_pos
+            WHERE bcv_key = ?
+            ORDER BY word_pos;
         """
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
-        defer { sqlite3_finalize(stmt) }
-        sqlite3_bind_int(stmt, 1, Int32(bookId))
-        sqlite3_bind_int(stmt, 2, Int32(chapter))
-        sqlite3_bind_int(stmt, 3, Int32(verse))
-        var out: [InterlinearWord] = []
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            out.append(InterlinearWord(
-                id: Int(sqlite3_column_int(stmt, 0)),
-                wordPos: Int(sqlite3_column_int(stmt, 1)),
-                originalText: Self.columnText(stmt, 2),
-                translit: Self.columnText(stmt, 3),
-                gloss: Self.columnText(stmt, 4),
-                strongsId: Self.columnText(stmt, 5),
-                morph: Self.columnText(stmt, 6)
-            ))
+        guard let res = try? db.queryParams(sql, params: [.int(Self.bcvKey(bookId, chapter, verse))]) else { return [] }
+        return res.rows.map { row in
+            InterlinearWord(
+                id: Int(row.int(at: 0) ?? 0),
+                wordPos: Int(row.int(at: 1) ?? 0),
+                originalText: row.string(at: 2) ?? "",
+                translit: row.string(at: 3) ?? "",
+                gloss: row.string(at: 4) ?? "",
+                strongsId: row.string(at: 5) ?? "",
+                morph: row.string(at: 6) ?? ""
+            )
         }
-        return out
     }
 
     public func entriesForVerse(source: StudyDictionarySource, verse: Verse, limit: Int = 12) -> [StudyDictionaryEntry] {
@@ -207,58 +205,50 @@ public final class ReferenceDatabase: @unchecked Sendable {
         var results: [StudyDictionaryEntry] = []
         var seen = Set<Int>()
 
-        // 1. Entries directly citing this exact verse (e.g. "Joh 3:16", "John 3:16", "Ge 1:1")
+        let safeLimit = max(1, min(limit, 500))
         if !abbrs.isEmpty {
             let likeClauses = abbrs.map { _ in "body LIKE ?" }.joined(separator: " OR ")
             let sql = """
                 SELECT id, headword, body FROM study_dictionaries
                 WHERE source = ? AND (\(likeClauses))
                 ORDER BY headword ASC
-                LIMIT ?
+                LIMIT \(safeLimit);
             """
-            var stmt: OpaquePointer?
-            if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
-                defer { sqlite3_finalize(stmt) }
-                sqlite3_bind_text(stmt, 1, source.dbKey, -1, SQLITE_TRANSIENT)
-                for (idx, pat) in abbrs.enumerated() {
-                    sqlite3_bind_text(stmt, Int32(2 + idx), "%\(pat)%", -1, SQLITE_TRANSIENT)
-                }
-                sqlite3_bind_int(stmt, Int32(2 + abbrs.count), Int32(limit))
-                while sqlite3_step(stmt) == SQLITE_ROW {
-                    let rowId = Int(sqlite3_column_int(stmt, 0))
+            var params: [MagQLiteParam] = [.string(source.dbKey)]
+            for pat in abbrs {
+                params.append(.string("%\(pat)%"))
+            }
+            if let res = try? db.queryParams(sql, params: params) {
+                for row in res.rows {
+                    let rowId = Int(row.int(at: 0) ?? 0)
                     if seen.insert(rowId).inserted {
                         results.append(StudyDictionaryEntry(
                             id: "\(source.dbKey)-\(rowId)",
                             source: source,
-                            headword: Self.columnText(stmt, 1),
-                            body: Self.columnText(stmt, 2)
+                            headword: row.string(at: 1) ?? "",
+                            body: row.string(at: 2) ?? ""
                         ))
                     }
                 }
             }
         }
 
-        // 2. Also match key headwords from the verse (great for Easton's names/places like Nicodemus, Pharisees)
         if results.count < limit {
             let keywords = Self.extractKeywords(from: verse.text, maxCount: 6)
             for kw in keywords {
                 if results.count >= limit { break }
                 let norm = kw.lowercased().filter { $0.isLetter || $0.isNumber }
                 guard norm.count >= 4 else { continue }
-                var stmt: OpaquePointer?
-                let sql = "SELECT id, headword, body FROM study_dictionaries WHERE source = ? AND headword_norm = ? LIMIT 2"
-                if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
-                    defer { sqlite3_finalize(stmt) }
-                    sqlite3_bind_text(stmt, 1, source.dbKey, -1, SQLITE_TRANSIENT)
-                    sqlite3_bind_text(stmt, 2, norm, -1, SQLITE_TRANSIENT)
-                    while sqlite3_step(stmt) == SQLITE_ROW {
-                        let rowId = Int(sqlite3_column_int(stmt, 0))
+                let sql = "SELECT id, headword, body FROM study_dictionaries WHERE headword_norm = ? AND source = ? LIMIT 2;"
+                if let res = try? db.queryParams(sql, params: [.string(norm), .string(source.dbKey)]) {
+                    for row in res.rows {
+                        let rowId = Int(row.int(at: 0) ?? 0)
                         if seen.insert(rowId).inserted {
                             results.append(StudyDictionaryEntry(
                                 id: "\(source.dbKey)-\(rowId)",
                                 source: source,
-                                headword: Self.columnText(stmt, 1),
-                                body: Self.columnText(stmt, 2)
+                                headword: row.string(at: 1) ?? "",
+                                body: row.string(at: 2) ?? ""
                             ))
                         }
                     }
@@ -338,61 +328,60 @@ public final class ReferenceDatabase: @unchecked Sendable {
         var results: [StudyDictionaryEntry] = []
         var seen = Set<Int>()
 
+        let safeLimit = max(1, min(limit, 500))
         // 1. Exact or prefix headword match first
         if !norm.isEmpty {
-            var stmt: OpaquePointer?
             let sql = """
                 SELECT id, headword, body FROM study_dictionaries
                 WHERE source = ? AND (headword_norm = ? OR headword_norm LIKE ?)
-                ORDER BY CASE WHEN headword_norm = ? THEN 0 ELSE 1 END, length(headword_norm)
-                LIMIT ?
+                ORDER BY CASE WHEN headword_norm = ? THEN 0 ELSE 1 END, LENGTH(headword_norm)
+                LIMIT \(safeLimit);
             """
-            if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
-                defer { sqlite3_finalize(stmt) }
-                sqlite3_bind_text(stmt, 1, source.dbKey, -1, SQLITE_TRANSIENT)
-                sqlite3_bind_text(stmt, 2, norm, -1, SQLITE_TRANSIENT)
-                sqlite3_bind_text(stmt, 3, "\(norm)%", -1, SQLITE_TRANSIENT)
-                sqlite3_bind_text(stmt, 4, norm, -1, SQLITE_TRANSIENT)
-                sqlite3_bind_int(stmt, 5, Int32(limit))
-                while sqlite3_step(stmt) == SQLITE_ROW {
-                    let rowId = Int(sqlite3_column_int(stmt, 0))
+            if let res = try? db.queryParams(sql, params: [
+                .string(source.dbKey),
+                .string(norm),
+                .string("\(norm)%"),
+                .string(norm)
+            ]) {
+                for row in res.rows {
+                    let rowId = Int(row.int(at: 0) ?? 0)
                     seen.insert(rowId)
                     results.append(StudyDictionaryEntry(
                         id: "\(source.dbKey)-\(rowId)",
                         source: source,
-                        headword: Self.columnText(stmt, 1),
-                        body: Self.columnText(stmt, 2)
+                        headword: row.string(at: 1) ?? "",
+                        body: row.string(at: 2) ?? ""
                     ))
                 }
             }
         }
 
-        // 2. FTS5 full-text fallback if fewer than limit
+        // 2. MagQLite BM25 / FTS_MATCH fallback if fewer than limit
         if results.count < limit {
             let tokens = trimmed.components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty }
             if !tokens.isEmpty {
-                let ftsQuery = tokens.map { "\"\($0)\"" }.joined(separator: " ")
-                var stmt: OpaquePointer?
+                let ftsQuery = tokens.joined(separator: " ")
                 let sql = """
-                    SELECT d.id, d.headword, d.body
-                    FROM study_dictionaries_fts f
-                    JOIN study_dictionaries d ON d.id = f.rowid
-                    WHERE study_dictionaries_fts MATCH ? AND d.source = ?
-                    LIMIT ?
+                    SELECT id, headword, body, BM25(body, ?) AS score
+                    FROM study_dictionaries
+                    WHERE source = ? AND (FTS_MATCH(headword, ?) OR FTS_MATCH(body, ?))
+                    ORDER BY score DESC
+                    LIMIT \(safeLimit);
                 """
-                if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
-                    defer { sqlite3_finalize(stmt) }
-                    sqlite3_bind_text(stmt, 1, ftsQuery, -1, SQLITE_TRANSIENT)
-                    sqlite3_bind_text(stmt, 2, source.dbKey, -1, SQLITE_TRANSIENT)
-                    sqlite3_bind_int(stmt, 3, Int32(limit))
-                    while sqlite3_step(stmt) == SQLITE_ROW {
-                        let rowId = Int(sqlite3_column_int(stmt, 0))
+                if let res = try? db.queryParams(sql, params: [
+                    .string(ftsQuery),
+                    .string(source.dbKey),
+                    .string(ftsQuery),
+                    .string(ftsQuery)
+                ]) {
+                    for row in res.rows {
+                        let rowId = Int(row.int(at: 0) ?? 0)
                         if seen.insert(rowId).inserted {
                             results.append(StudyDictionaryEntry(
                                 id: "\(source.dbKey)-\(rowId)",
                                 source: source,
-                                headword: Self.columnText(stmt, 1),
-                                body: Self.columnText(stmt, 2)
+                                headword: row.string(at: 1) ?? "",
+                                body: row.string(at: 2) ?? ""
                             ))
                         }
                     }
@@ -407,46 +396,38 @@ public final class ReferenceDatabase: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         guard let db else { return 0 }
-        var stmt: OpaquePointer?
-        let sql = "SELECT COUNT(*) FROM verses WHERE book_id = ? AND chapter = ?"
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return 0 }
-        defer { sqlite3_finalize(stmt) }
-        sqlite3_bind_int(stmt, 1, Int32(bookId))
-        sqlite3_bind_int(stmt, 2, Int32(chapter))
-        guard sqlite3_step(stmt) == SQLITE_ROW else { return 0 }
-        return Int(sqlite3_column_int(stmt, 0))
+        let sql = "SELECT COUNT(*) FROM verses WHERE bc_key = ?;"
+        guard let res = try? db.queryParams(sql, params: [.int(Self.bcKey(bookId, chapter))]),
+              let row = res.rows.first else { return 0 }
+        return Int(row.int(at: 0) ?? 0)
     }
 
     public func crossReferences(bookId: Int, chapter: Int) -> [Int: [CrossReference]] {
         lock.lock()
         defer { lock.unlock() }
         guard let db else { return [:] }
-        var stmt: OpaquePointer?
         let sql = """
             SELECT id, from_book, from_chapter, from_verse, phrase, to_book, to_chapter, to_verse_start, to_verse_end
             FROM tsk_cross_refs
-            WHERE from_book = ? AND from_chapter = ?
-            ORDER BY from_verse, sort_order
+            WHERE from_bc_key = ?
+            ORDER BY from_verse, sort_order;
         """
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [:] }
-        defer { sqlite3_finalize(stmt) }
-        sqlite3_bind_int(stmt, 1, Int32(bookId))
-        sqlite3_bind_int(stmt, 2, Int32(chapter))
+        guard let res = try? db.queryParams(sql, params: [.int(Self.bcKey(bookId, chapter))]) else { return [:] }
         var grouped: [Int: [CrossReference]] = [:]
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            let fromVerse = Int(sqlite3_column_int(stmt, 3))
-            let toBook = Int(sqlite3_column_int(stmt, 5))
+        for row in res.rows {
+            let fromVerse = Int(row.int(at: 3) ?? 0)
+            let toBook = Int(row.int(at: 5) ?? 0)
             let targetBook = bookMap[toBook]
             let ref = CrossReference(
-                id: Int(sqlite3_column_int(stmt, 0)),
-                fromBook: Int(sqlite3_column_int(stmt, 1)),
-                fromChapter: Int(sqlite3_column_int(stmt, 2)),
+                id: Int(row.int(at: 0) ?? 0),
+                fromBook: Int(row.int(at: 1) ?? 0),
+                fromChapter: Int(row.int(at: 2) ?? 0),
                 fromVerse: fromVerse,
-                phrase: Self.columnText(stmt, 4),
+                phrase: row.string(at: 4) ?? "",
                 toBook: toBook,
-                toChapter: Int(sqlite3_column_int(stmt, 6)),
-                toVerseStart: Int(sqlite3_column_int(stmt, 7)),
-                toVerseEnd: Int(sqlite3_column_int(stmt, 8)),
+                toChapter: Int(row.int(at: 6) ?? 0),
+                toVerseStart: Int(row.int(at: 7) ?? 0),
+                toVerseEnd: Int(row.int(at: 8) ?? 0),
                 toBookAbbr: targetBook?.abbr ?? "Book \(toBook)",
                 toBookName: targetBook?.name ?? "Book \(toBook)"
             )
@@ -488,7 +469,12 @@ public final class ReferenceDatabase: @unchecked Sendable {
         return VerseRef(bookId: parsed.bookId, chapter: parsed.chapter, verse: parsed.startVerse)
     }
 
-    public func searchScripture(query: String, scopeBookId: Int? = nil, limit: Int = 80) -> [SearchResult] {
+    public func searchScripture(
+        query: String,
+        scopeBookId: Int? = nil,
+        matchMode: ScriptureSearchMode = .exact,
+        limit: Int? = nil
+    ) -> [SearchResult] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
 
@@ -512,59 +498,161 @@ public final class ReferenceDatabase: @unchecked Sendable {
         defer { lock.unlock() }
         guard let db else { return [] }
 
-        let safeQuery: String
-        if trimmed.hasPrefix("\"") && trimmed.hasSuffix("\"") {
-            safeQuery = trimmed
+        let tokens = trimmed
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .map { $0.lowercased() }
+        guard !tokens.isEmpty else { return [] }
+
+        let limitClause: String
+        if let limit {
+            limitClause = " LIMIT \(max(1, min(limit, 5000)))"
         } else {
-            let tokens = trimmed.components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty }
-            guard !tokens.isEmpty else { return [] }
-            safeQuery = tokens.map { "\"\($0)\"" }.joined(separator: " ")
+            limitClause = ""
         }
 
         let sql: String
-        if scopeBookId != nil {
-            sql = """
-                SELECT v.id, v.book_id, b.name, v.chapter, v.verse, v.text_plain
-                FROM verses_fts f
-                JOIN verses v ON v.id = f.rowid
-                JOIN books b ON b.id = v.book_id
-                WHERE verses_fts MATCH ? AND v.book_id = ?
-                ORDER BY v.id
-                LIMIT ?
-            """
-        } else {
-            sql = """
-                SELECT v.id, v.book_id, b.name, v.chapter, v.verse, v.text_plain
-                FROM verses_fts f
-                JOIN verses v ON v.id = f.rowid
-                JOIN books b ON b.id = v.book_id
-                WHERE verses_fts MATCH ?
-                ORDER BY v.id
-                LIMIT ?
-            """
+        var params: [MagQLiteParam] = []
+
+        switch matchMode {
+        case .meaning:
+            return searchScriptureSemanticUnlocked(tokens: tokens, scopeBookId: scopeBookId, limit: limit ?? 60)
+
+        case .exact:
+            let ftsQuery = tokens.joined(separator: " ")
+            if let scopeBookId {
+                sql = "SELECT id, book_id, chapter, verse, text_plain FROM verses WHERE book_id = ? AND FTS_MATCH(text_plain, ?) ORDER BY id ASC\(limitClause);"
+                params = [.int(Int64(scopeBookId)), .string(ftsQuery)]
+            } else {
+                sql = "SELECT id, book_id, chapter, verse, text_plain FROM verses WHERE FTS_MATCH(text_plain, ?) ORDER BY id ASC\(limitClause);"
+                params = [.string(ftsQuery)]
+            }
+
+        case .wordStartsWith, .contains:
+            let likeClauses = tokens.map { _ in "LOWER(text_plain) LIKE ?" }.joined(separator: " AND ")
+            let sqlLimit = (matchMode == .contains) ? limitClause : ""
+            if let scopeBookId {
+                sql = "SELECT id, book_id, chapter, verse, text_plain FROM verses WHERE book_id = ? AND \(likeClauses) ORDER BY id ASC\(sqlLimit);"
+                params.append(.int(Int64(scopeBookId)))
+            } else {
+                sql = "SELECT id, book_id, chapter, verse, text_plain FROM verses WHERE \(likeClauses) ORDER BY id ASC\(sqlLimit);"
+            }
+            for tok in tokens {
+                params.append(.string("%\(tok)%"))
+            }
         }
-        var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
-        defer { sqlite3_finalize(stmt) }
-        sqlite3_bind_text(stmt, 1, safeQuery, -1, SQLITE_TRANSIENT)
+
+        guard let res = try? db.queryParams(sql, params: params) else { return [] }
+
+        // Precompile word-start regexes if Word Forms mode is active
+        let wordStartRegexes: [NSRegularExpression]
+        if matchMode == .wordStartsWith {
+            wordStartRegexes = tokens.compactMap { tok in
+                let escaped = NSRegularExpression.escapedPattern(for: tok)
+                return try? NSRegularExpression(pattern: "\\b\(escaped)", options: [.caseInsensitive])
+            }
+        } else {
+            wordStartRegexes = []
+        }
+
+        var out: [SearchResult] = []
+        out.reserveCapacity(res.rows.count)
+        for row in res.rows {
+            let text = row.string(at: 4) ?? ""
+            if !wordStartRegexes.isEmpty {
+                let nsRange = NSRange(text.startIndex..., in: text)
+                let allMatch = wordStartRegexes.allSatisfy { $0.firstMatch(in: text, range: nsRange) != nil }
+                if !allMatch { continue }
+            }
+            let bookId = Int(row.int(at: 1) ?? 0)
+            out.append(SearchResult(
+                id: Int(row.int(at: 0) ?? 0),
+                bookId: bookId,
+                bookName: bookMap[bookId]?.name ?? "Book \(bookId)",
+                chapter: Int(row.int(at: 2) ?? 0),
+                verse: Int(row.int(at: 3) ?? 0),
+                text: text
+            ))
+            if let limit, out.count >= limit { break }
+        }
+        return out
+    }
+
+    /// 100% offline semantic / meaning search powered natively by MagQLite's VECTOR(64) and <=> cosine distance.
+    private func searchScriptureSemanticUnlocked(tokens: [String], scopeBookId: Int?, limit: Int) -> [SearchResult] {
+        guard let db else { return [] }
+        let dim = 64
+        var qVec = [Double](repeating: 0.0, count: dim)
+        var hitCount = 0
+
+        let vocabSql = "SELECT emb, idf FROM semantic_vocab WHERE word = ? LIMIT 1;"
+        for rawTok in tokens {
+            let candidates = Self.stemCandidates(for: rawTok)
+            for cand in candidates {
+                if let res = try? db.queryParams(vocabSql, params: [.string(cand)]),
+                   let row = res.rows.first,
+                   let vec = Self.parseVector(row.values.first) {
+                    let idf = row.double(at: 1) ?? 4.0
+                    let count = min(dim, vec.count)
+                    for i in 0..<count {
+                        qVec[i] += vec[i] * idf
+                    }
+                    hitCount += 1
+                    break
+                }
+            }
+        }
+        guard hitCount > 0 else { return [] }
+
+        let norm = sqrt(qVec.reduce(0.0) { $0 + $1 * $1 })
+        guard norm > 0 else { return [] }
+        let vecLiteral = "[" + qVec.map { String(format: "%.4f", $0 / norm) }.joined(separator: ",") + "]"
+        let safeLimit = max(1, min(limit, 200))
+
+        let vecSql: String
+        let vecRes: MagQLiteResult?
         if let scopeBookId {
-            sqlite3_bind_int(stmt, 2, Int32(scopeBookId))
-            sqlite3_bind_int(stmt, 3, Int32(limit))
+            vecSql = "SELECT verse_id, emb <=> '\(vecLiteral)' AS dist FROM verse_vectors WHERE book_id = ? ORDER BY dist ASC LIMIT \(safeLimit);"
+            vecRes = try? db.queryParams(vecSql, params: [.int(Int64(scopeBookId))])
         } else {
-            sqlite3_bind_int(stmt, 2, Int32(limit))
+            vecSql = "SELECT verse_id, emb <=> '\(vecLiteral)' AS dist FROM verse_vectors ORDER BY dist ASC LIMIT \(safeLimit);"
+            vecRes = try? db.query(vecSql)
         }
-        var results: [SearchResult] = []
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            results.append(SearchResult(
-                id: Int(sqlite3_column_int(stmt, 0)),
-                bookId: Int(sqlite3_column_int(stmt, 1)),
-                bookName: Self.columnText(stmt, 2),
-                chapter: Int(sqlite3_column_int(stmt, 3)),
-                verse: Int(sqlite3_column_int(stmt, 4)),
-                text: Self.columnText(stmt, 5)
+        guard let rows = vecRes?.rows else { return [] }
+
+        var out: [SearchResult] = []
+        out.reserveCapacity(rows.count)
+        let verseSql = "SELECT id, book_id, chapter, verse, text_plain FROM verses WHERE id = ? LIMIT 1;"
+        for row in rows {
+            guard let vid = row.int(at: 0),
+                  let vRes = try? db.queryParams(verseSql, params: [.int(vid)]),
+                  let vRow = vRes.rows.first else { continue }
+            let bookId = Int(vRow.int(at: 1) ?? 0)
+            out.append(SearchResult(
+                id: Int(vRow.int(at: 0) ?? 0),
+                bookId: bookId,
+                bookName: bookMap[bookId]?.name ?? "Book \(bookId)",
+                chapter: Int(vRow.int(at: 2) ?? 0),
+                verse: Int(vRow.int(at: 3) ?? 0),
+                text: vRow.string(at: 4) ?? ""
             ))
         }
-        return results
+        return out
+    }
+
+    private static func parseVector(_ raw: Any?) -> [Double]? {
+        if let arr = raw as? [Double] { return arr }
+        if let arr = raw as? [NSNumber] { return arr.map { $0.doubleValue } }
+        if let arr = raw as? [Any] {
+            let parsed = arr.compactMap { ($0 as? NSNumber)?.doubleValue ?? ($0 as? Double) }
+            return parsed.isEmpty ? nil : parsed
+        }
+        if let str = raw as? String {
+            let trimmed = str.trimmingCharacters(in: CharacterSet(charactersIn: "[] \n\t"))
+            let parsed = trimmed.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+            return parsed.isEmpty ? nil : parsed
+        }
+        return nil
     }
 
     public func lookupStrongs(id raw: String) -> StrongsEntry? {
@@ -573,13 +661,10 @@ public final class ReferenceDatabase: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         guard let db else { return nil }
-        var stmt: OpaquePointer?
-        let sql = "SELECT strongs_id, testament, lemma, translit, pronunciation, derivation, definition, kjv_usage FROM strongs_lexicon WHERE strongs_id = ? LIMIT 1"
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
-        defer { sqlite3_finalize(stmt) }
-        sqlite3_bind_text(stmt, 1, sid, -1, SQLITE_TRANSIENT)
-        guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
-        return Self.readStrongsRow(stmt)
+        let sql = "SELECT strongs_id, testament, lemma, translit, pronunciation, derivation, definition, kjv_usage FROM strongs_lexicon WHERE strongs_id = ? LIMIT 1;"
+        guard let res = try? db.queryParams(sql, params: [.string(sid)]),
+              let row = res.rows.first else { return nil }
+        return Self.readStrongsRow(row)
     }
 
     public func versesForStrongs(strongsId raw: String, limit: Int = 30) -> [SearchResult] {
@@ -588,32 +673,28 @@ public final class ReferenceDatabase: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         guard let db else { return [] }
-        var stmt: OpaquePointer?
-        let sql = """
-            SELECT DISTINCT v.id, v.book_id, b.name, v.chapter, v.verse, v.text_plain
-            FROM interlinear_words w
-            JOIN verses v ON v.book_id = w.book_id AND v.chapter = w.chapter AND v.verse = w.verse
-            JOIN books b ON b.id = v.book_id
-            WHERE w.strongs_id = ?
-            ORDER BY v.id
-            LIMIT ?
-        """
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
-        defer { sqlite3_finalize(stmt) }
-        sqlite3_bind_text(stmt, 1, sid, -1, SQLITE_TRANSIENT)
-        sqlite3_bind_int(stmt, 2, Int32(limit))
+
+        // 2-step indexed lookup: hits TEXT B+Tree on interlinear_words(strongs_id) then INT B+Tree on verses(bcv_key)
+        let safeLimit = max(1, min(limit, 500))
+        let keySql = "SELECT DISTINCT bcv_key FROM interlinear_words WHERE strongs_id = ? LIMIT \(safeLimit);"
+        guard let keyRes = try? db.queryParams(keySql, params: [.string(sid)]) else { return [] }
         var out: [SearchResult] = []
-        while sqlite3_step(stmt) == SQLITE_ROW {
+        let vSql = "SELECT id, book_id, chapter, verse, text_plain FROM verses WHERE bcv_key = ? LIMIT 1;"
+        for kRow in keyRes.rows {
+            guard let bcv = kRow.int(at: 0),
+                  let vRes = try? db.queryParams(vSql, params: [.int(bcv)]),
+                  let vRow = vRes.rows.first else { continue }
+            let bookId = Int(vRow.int(at: 1) ?? 0)
             out.append(SearchResult(
-                id: Int(sqlite3_column_int(stmt, 0)),
-                bookId: Int(sqlite3_column_int(stmt, 1)),
-                bookName: Self.columnText(stmt, 2),
-                chapter: Int(sqlite3_column_int(stmt, 3)),
-                verse: Int(sqlite3_column_int(stmt, 4)),
-                text: Self.columnText(stmt, 5)
+                id: Int(vRow.int(at: 0) ?? 0),
+                bookId: bookId,
+                bookName: bookMap[bookId]?.name ?? "Book \(bookId)",
+                chapter: Int(vRow.int(at: 2) ?? 0),
+                verse: Int(vRow.int(at: 3) ?? 0),
+                text: vRow.string(at: 4) ?? ""
             ))
         }
-        return out
+        return out.sorted { $0.id < $1.id }
     }
 
     private static let dictBookAliases: [String: Int] = [
@@ -735,40 +816,29 @@ public final class ReferenceDatabase: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         guard let db else { return [] }
+        let q = cleaned.lowercased()
+        let safeLimit = max(1, min(limit, 500))
         let sql: String
-        if testament != nil {
-            sql = """
-                SELECT s.strongs_id, s.testament, s.lemma, s.translit, s.pronunciation, s.derivation, s.definition, s.kjv_usage
-                FROM strongs_fts f
-                JOIN strongs_lexicon s ON s.rowid = f.rowid
-                WHERE strongs_fts MATCH ? AND s.testament = ?
-                LIMIT ?
-            """
-        } else {
-            sql = """
-                SELECT s.strongs_id, s.testament, s.lemma, s.translit, s.pronunciation, s.derivation, s.definition, s.kjv_usage
-                FROM strongs_fts f
-                JOIN strongs_lexicon s ON s.rowid = f.rowid
-                WHERE strongs_fts MATCH ?
-                LIMIT ?
-            """
-        }
-        var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
-        defer { sqlite3_finalize(stmt) }
-        let q = "\"\(cleaned.lowercased())\""
-        sqlite3_bind_text(stmt, 1, q, -1, SQLITE_TRANSIENT)
+        let params: [MagQLiteParam]
         if let testament {
-            sqlite3_bind_text(stmt, 2, testament, -1, SQLITE_TRANSIENT)
-            sqlite3_bind_int(stmt, 3, Int32(limit))
+            sql = """
+                SELECT strongs_id, testament, lemma, translit, pronunciation, derivation, definition, kjv_usage
+                FROM strongs_lexicon
+                WHERE testament = ? AND (FTS_MATCH(definition, ?) OR FTS_MATCH(kjv_usage, ?) OR FTS_MATCH(translit, ?))
+                LIMIT \(safeLimit);
+            """
+            params = [.string(testament), .string(q), .string(q), .string(q)]
         } else {
-            sqlite3_bind_int(stmt, 2, Int32(limit))
+            sql = """
+                SELECT strongs_id, testament, lemma, translit, pronunciation, derivation, definition, kjv_usage
+                FROM strongs_lexicon
+                WHERE FTS_MATCH(definition, ?) OR FTS_MATCH(kjv_usage, ?) OR FTS_MATCH(translit, ?)
+                LIMIT \(safeLimit);
+            """
+            params = [.string(q), .string(q), .string(q)]
         }
-        var out: [StrongsEntry] = []
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            out.append(Self.readStrongsRow(stmt))
-        }
-        return out
+        guard let res = try? db.queryParams(sql, params: params) else { return [] }
+        return res.rows.map(Self.readStrongsRow)
     }
 
     public func lookupWebster(word raw: String) -> [WebsterEntry] {
@@ -778,22 +848,17 @@ public final class ReferenceDatabase: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         guard let db else { return [] }
+        let sql = "SELECT id, headword, headword_norm, definition FROM webster_1828 WHERE headword_norm = ? LIMIT 4;"
         for cand in candidates {
-            var stmt: OpaquePointer?
-            let sql = "SELECT id, headword, headword_norm, definition FROM webster_1828 WHERE headword_norm = ? LIMIT 4"
-            if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
-                defer { sqlite3_finalize(stmt) }
-                sqlite3_bind_text(stmt, 1, cand, -1, SQLITE_TRANSIENT)
-                var hits: [WebsterEntry] = []
-                while sqlite3_step(stmt) == SQLITE_ROW {
-                    hits.append(WebsterEntry(
-                        id: Int(sqlite3_column_int(stmt, 0)),
-                        headword: Self.columnText(stmt, 1),
-                        headwordNorm: Self.columnText(stmt, 2),
-                        definition: Self.columnText(stmt, 3)
-                    ))
+            if let res = try? db.queryParams(sql, params: [.string(cand)]), !res.rows.isEmpty {
+                return res.rows.map { row in
+                    WebsterEntry(
+                        id: Int(row.int(at: 0) ?? 0),
+                        headword: row.string(at: 1) ?? "",
+                        headwordNorm: row.string(at: 2) ?? "",
+                        definition: row.string(at: 3) ?? ""
+                    )
                 }
-                if !hits.isEmpty { return hits }
             }
         }
         return []
@@ -805,39 +870,30 @@ public final class ReferenceDatabase: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         guard let db else { return [] }
-        var stmt: OpaquePointer?
         let sql = """
             SELECT DISTINCT p.id, p.name, p.place_type, p.modern_name, p.description, p.lat, p.lon, p.verse_count
             FROM place_verses pv
             JOIN biblical_places p ON p.id = pv.place_id
-            WHERE pv.book_id = ? AND pv.chapter = ?
-            ORDER BY p.verse_count DESC, p.name ASC
+            WHERE pv.bc_key = ?
+            ORDER BY p.verse_count DESC, p.name ASC;
         """
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
-        defer { sqlite3_finalize(stmt) }
-        sqlite3_bind_int(stmt, 1, Int32(bookId))
-        sqlite3_bind_int(stmt, 2, Int32(chapter))
-        return Self.readPlaceRows(stmt)
+        guard let res = try? db.queryParams(sql, params: [.int(Self.bcKey(bookId, chapter))]) else { return [] }
+        return res.rows.map(Self.readPlaceRow)
     }
 
     public func placesForVerse(bookId: Int, chapter: Int, verse: Int) -> [BiblicalPlace] {
         lock.lock()
         defer { lock.unlock() }
         guard let db else { return [] }
-        var stmt: OpaquePointer?
         let sql = """
             SELECT DISTINCT p.id, p.name, p.place_type, p.modern_name, p.description, p.lat, p.lon, p.verse_count
             FROM place_verses pv
             JOIN biblical_places p ON p.id = pv.place_id
-            WHERE pv.book_id = ? AND pv.chapter = ? AND pv.verse = ?
-            ORDER BY p.verse_count DESC, p.name ASC
+            WHERE pv.bcv_key = ?
+            ORDER BY p.verse_count DESC, p.name ASC;
         """
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
-        defer { sqlite3_finalize(stmt) }
-        sqlite3_bind_int(stmt, 1, Int32(bookId))
-        sqlite3_bind_int(stmt, 2, Int32(chapter))
-        sqlite3_bind_int(stmt, 3, Int32(verse))
-        return Self.readPlaceRows(stmt)
+        guard let res = try? db.queryParams(sql, params: [.int(Self.bcvKey(bookId, chapter, verse))]) else { return [] }
+        return res.rows.map(Self.readPlaceRow)
     }
 
     public func searchPlaces(query raw: String, limit: Int = 40) -> [BiblicalPlace] {
@@ -847,75 +903,122 @@ public final class ReferenceDatabase: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         guard let db else { return [] }
-        var stmt: OpaquePointer?
+        let safeLimit = max(1, min(limit, 500))
         let sql = """
             SELECT id, name, place_type, modern_name, description, lat, lon, verse_count
             FROM biblical_places
             WHERE name_norm LIKE ? OR modern_name LIKE ? OR description LIKE ?
             ORDER BY CASE WHEN name_norm = ? THEN 0 WHEN name_norm LIKE ? THEN 1 ELSE 2 END, verse_count DESC, name ASC
-            LIMIT ?
+            LIMIT \(safeLimit);
         """
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
-        defer { sqlite3_finalize(stmt) }
-        let containsNorm = "%\(norm)%"
-        let prefixNorm = "\(norm)%"
-        let containsRaw = "%\(q)%"
-        sqlite3_bind_text(stmt, 1, containsNorm, -1, SQLITE_TRANSIENT)
-        sqlite3_bind_text(stmt, 2, containsRaw, -1, SQLITE_TRANSIENT)
-        sqlite3_bind_text(stmt, 3, containsRaw, -1, SQLITE_TRANSIENT)
-        sqlite3_bind_text(stmt, 4, norm, -1, SQLITE_TRANSIENT)
-        sqlite3_bind_text(stmt, 5, prefixNorm, -1, SQLITE_TRANSIENT)
-        sqlite3_bind_int(stmt, 6, Int32(limit))
-        return Self.readPlaceRows(stmt)
+        guard let res = try? db.queryParams(sql, params: [
+            .string("%\(norm)%"),
+            .string("%\(q)%"),
+            .string("%\(q)%"),
+            .string(norm),
+            .string("\(norm)%")
+        ]) else { return [] }
+        return res.rows.map(Self.readPlaceRow)
+    }
+
+    public func nearbyPlaces(
+        lat: Double,
+        lon: Double,
+        radiusMiles: Double = 25,
+        excludeId: String? = nil,
+        limit: Int = 12
+    ) -> [(place: BiblicalPlace, miles: Double)] {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let db else { return [] }
+        let radiusKm = max(1.0, radiusMiles * 1.609344)
+        let safeLimit = max(1, min(limit, 50))
+        let sql: String
+        let params: [MagQLiteParam]
+        if let excludeId, !excludeId.isEmpty {
+            sql = """
+                SELECT id, name, place_type, modern_name, description, lat, lon, verse_count,
+                       ST_DISTANCE_KM(?, ?, lat, lon) AS km
+                FROM biblical_places
+                WHERE id != ? AND ST_WITHIN_KM(?, ?, lat, lon, ?)
+                ORDER BY km ASC
+                LIMIT \(safeLimit);
+            """
+            params = [
+                .double(lat), .double(lon),
+                .string(excludeId),
+                .double(lat), .double(lon), .double(radiusKm)
+            ]
+        } else {
+            sql = """
+                SELECT id, name, place_type, modern_name, description, lat, lon, verse_count,
+                       ST_DISTANCE_KM(?, ?, lat, lon) AS km
+                FROM biblical_places
+                WHERE ST_WITHIN_KM(?, ?, lat, lon, ?)
+                ORDER BY km ASC
+                LIMIT \(safeLimit);
+            """
+            params = [
+                .double(lat), .double(lon),
+                .double(lat), .double(lon), .double(radiusKm)
+            ]
+        }
+        guard let res = try? db.queryParams(sql, params: params) else { return [] }
+        return res.rows.map { row in
+            let place = Self.readPlaceRow(row)
+            let km = row.double(at: 8) ?? 0
+            return (place: place, miles: km / 1.609344)
+        }
     }
 
     public func versesForPlace(placeId: String, limit: Int = 30) -> [SearchResult] {
         lock.lock()
         defer { lock.unlock() }
         guard let db else { return [] }
-        var stmt: OpaquePointer?
-        let sql = """
-            SELECT v.id, v.book_id, b.name, v.chapter, v.verse, v.text_plain
-            FROM place_verses pv
-            JOIN verses v ON v.book_id = pv.book_id AND v.chapter = pv.chapter AND v.verse = pv.verse
-            JOIN books b ON b.id = v.book_id
-            WHERE pv.place_id = ?
-            ORDER BY v.id
-            LIMIT ?
-        """
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
-        defer { sqlite3_finalize(stmt) }
-        sqlite3_bind_text(stmt, 1, placeId, -1, SQLITE_TRANSIENT)
-        sqlite3_bind_int(stmt, 2, Int32(limit))
+        let safeLimit = max(1, min(limit, 500))
+        let keySql = "SELECT DISTINCT bcv_key FROM place_verses WHERE place_id = ? LIMIT \(safeLimit);"
+        guard let keyRes = try? db.queryParams(keySql, params: [.string(placeId)]) else { return [] }
         var out: [SearchResult] = []
-        while sqlite3_step(stmt) == SQLITE_ROW {
+        let vSql = "SELECT id, book_id, chapter, verse, text_plain FROM verses WHERE bcv_key = ? LIMIT 1;"
+        for kRow in keyRes.rows {
+            guard let bcv = kRow.int(at: 0),
+                  let vRes = try? db.queryParams(vSql, params: [.int(bcv)]),
+                  let vRow = vRes.rows.first else { continue }
+            let bookId = Int(vRow.int(at: 1) ?? 0)
             out.append(SearchResult(
-                id: Int(sqlite3_column_int(stmt, 0)),
-                bookId: Int(sqlite3_column_int(stmt, 1)),
-                bookName: Self.columnText(stmt, 2),
-                chapter: Int(sqlite3_column_int(stmt, 3)),
-                verse: Int(sqlite3_column_int(stmt, 4)),
-                text: Self.columnText(stmt, 5)
+                id: Int(vRow.int(at: 0) ?? 0),
+                bookId: bookId,
+                bookName: bookMap[bookId]?.name ?? "Book \(bookId)",
+                chapter: Int(vRow.int(at: 2) ?? 0),
+                verse: Int(vRow.int(at: 3) ?? 0),
+                text: vRow.string(at: 4) ?? ""
             ))
         }
-        return out
+        return out.sorted { $0.id < $1.id }
     }
 
-    private static func readPlaceRows(_ stmt: OpaquePointer?) -> [BiblicalPlace] {
-        var out: [BiblicalPlace] = []
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            out.append(BiblicalPlace(
-                id: columnText(stmt, 0),
-                name: columnText(stmt, 1),
-                placeType: columnText(stmt, 2),
-                modernName: columnText(stmt, 3),
-                description: columnText(stmt, 4),
-                lat: sqlite3_column_double(stmt, 5),
-                lon: sqlite3_column_double(stmt, 6),
-                verseCount: Int(sqlite3_column_int(stmt, 7))
-            ))
-        }
-        return out
+    private static func readVerseRow(_ row: MagQLiteRow) -> Verse {
+        Verse(
+            id: Int(row.int(at: 0) ?? 0),
+            bookId: Int(row.int(at: 1) ?? 0),
+            chapter: Int(row.int(at: 2) ?? 0),
+            verse: Int(row.int(at: 3) ?? 0),
+            text: row.string(at: 4) ?? "",
+            textMarked: row.string(at: 5) ?? ""
+        )
+    }
+
+    private static func readPlaceRow(_ row: MagQLiteRow) -> BiblicalPlace {
+        BiblicalPlace(
+            id: row.string(at: 0) ?? "",
+            name: row.string(at: 1) ?? "",
+            placeType: row.string(at: 2) ?? "",
+            modernName: row.string(at: 3) ?? "",
+            description: row.string(at: 4) ?? "",
+            lat: row.double(at: 5) ?? 0,
+            lon: row.double(at: 6) ?? 0,
+            verseCount: Int(row.int(at: 7) ?? 0)
+        )
     }
 
     private static func stemCandidates(for word: String) -> [String] {
@@ -930,21 +1033,16 @@ public final class ReferenceDatabase: @unchecked Sendable {
         return list
     }
 
-    private static func readStrongsRow(_ stmt: OpaquePointer?) -> StrongsEntry {
+    private static func readStrongsRow(_ row: MagQLiteRow) -> StrongsEntry {
         StrongsEntry(
-            strongsId: columnText(stmt, 0),
-            testament: columnText(stmt, 1),
-            lemma: columnText(stmt, 2),
-            translit: columnText(stmt, 3),
-            pronunciation: columnText(stmt, 4),
-            derivation: columnText(stmt, 5),
-            definition: columnText(stmt, 6),
-            kjvUsage: columnText(stmt, 7)
+            strongsId: row.string(at: 0) ?? "",
+            testament: row.string(at: 1) ?? "",
+            lemma: row.string(at: 2) ?? "",
+            translit: row.string(at: 3) ?? "",
+            pronunciation: row.string(at: 4) ?? "",
+            derivation: row.string(at: 5) ?? "",
+            definition: row.string(at: 6) ?? "",
+            kjvUsage: row.string(at: 7) ?? ""
         )
-    }
-
-    private static func columnText(_ stmt: OpaquePointer?, _ index: Int32) -> String {
-        guard let cstr = sqlite3_column_text(stmt, index) else { return "" }
-        return String(cString: cstr)
     }
 }

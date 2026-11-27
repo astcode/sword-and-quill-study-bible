@@ -65,6 +65,13 @@ public struct VerseActionPopover: View {
                                 viewModel.openLeftStudy(tab: .dictionary, for: verse, dictionarySource: .nave)
                             }
                         }
+                        if viewModel.moduleManager.hasEnabledCommentaries {
+                            actionRow("Commentaries", icon: "text.quote", detail: "\(viewModel.moduleManager.enabledCommentaries.count)") {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    viewModel.openLeftStudy(tab: .commentary, for: verse)
+                                }
+                            }
+                        }
                         actionRow("Places & Map", icon: "map", detail: "\(viewModel.chapterPlaces.count)") {
                             withAnimation(.easeInOut(duration: 0.2)) {
                                 viewModel.openLeftStudy(tab: .places, for: verse)
@@ -288,7 +295,10 @@ public struct LeftStudyDeskView: View {
         VStack(spacing: 0) {
             // Header with Tab Bar + Close button
             HStack(spacing: 6) {
-                ForEach(LeftPanelTab.allCases) { tab in
+                let visibleTabs = LeftPanelTab.allCases.filter { tab in
+                    tab != .commentary || viewModel.moduleManager.hasEnabledCommentaries
+                }
+                ForEach(visibleTabs) { tab in
                     Button {
                         withAnimation(.easeInOut(duration: 0.15)) {
                             viewModel.leftPanelTab = tab
@@ -330,6 +340,8 @@ public struct LeftStudyDeskView: View {
                 strongsTabView
             case .dictionary:
                 websterTabView
+            case .commentary:
+                CommentaryDeskView(viewModel: viewModel, moduleManager: viewModel.moduleManager)
             case .places:
                 PlacesMapDeskView(viewModel: viewModel)
             case .parallel:
@@ -379,7 +391,7 @@ public struct LeftStudyDeskView: View {
                                             viewModel.openCrossRefPreview(ref)
                                         } label: {
                                             Text(ref.displayRef)
-                                                .font(.system(size: 12, weight: .medium, design: .serif))
+                                                .font(.system(size: max(11, viewModel.studyDeskFontSize - 1.5), weight: .medium, design: .serif))
                                                 .foregroundStyle(viewModel.theme.accentBlue)
                                                 .padding(.horizontal, 7)
                                                 .padding(.vertical, 5)
@@ -435,7 +447,7 @@ public struct LeftStudyDeskView: View {
                             .foregroundStyle(isCore ? viewModel.theme.accentBlue : viewModel.theme.secondaryText)
                             .frame(width: 20, alignment: .trailing)
                         Text(v.text)
-                            .font(.system(size: 14.5, design: .serif))
+                            .font(.system(size: viewModel.studyDeskFontSize + 0.5, design: .serif))
                             .foregroundStyle(isCore ? viewModel.theme.primaryText : viewModel.theme.secondaryText)
                             .lineSpacing(3)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -680,7 +692,7 @@ public struct LeftStudyDeskView: View {
                                 HStack(alignment: .center, spacing: 8) {
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(w.gloss)
-                                            .font(.caption.weight(.semibold))
+                                            .font(.system(size: max(11, viewModel.studyDeskFontSize - 1.5), weight: .semibold))
                                             .foregroundStyle(viewModel.theme.primaryText)
                                         if !w.morph.isEmpty {
                                             Text(w.morph)
@@ -821,9 +833,9 @@ public struct LeftStudyDeskView: View {
                                 .controlSize(.mini)
                             }
                             Text(entry.body)
-                                .font(.system(size: 13.5, design: .serif))
+                                .font(.system(size: viewModel.studyDeskFontSize, design: .serif))
                                 .foregroundStyle(viewModel.theme.primaryText)
-                                .lineSpacing(3)
+                                .lineSpacing(max(3, viewModel.studyDeskFontSize * 0.24))
 
                             if !linkedRefs.isEmpty {
                                 Divider().overlay(viewModel.theme.dividerColor)

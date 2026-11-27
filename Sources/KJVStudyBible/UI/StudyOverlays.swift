@@ -530,6 +530,7 @@ public struct SearchSheet: View {
     @State private var personalHits: [PersonalSearchHit] = []
     @State private var strongsHit: StrongsEntry? = nil
     @State private var currentBookOnly: Bool = false
+    @State private var matchMode: ScriptureSearchMode = .exact
 
     public var body: some View {
         NavigationStack {
@@ -543,6 +544,21 @@ public struct SearchSheet: View {
                 }
                 .padding(.horizontal)
 
+                VStack(alignment: .leading, spacing: 4) {
+                    Picker("Match Mode", selection: $matchMode) {
+                        ForEach(ScriptureSearchMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: matchMode) { _, _ in runSearch() }
+
+                    Text(matchModeHint)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal)
+
                 Toggle("Search only in \(viewModel.currentBook?.name ?? "current book")", isOn: $currentBookOnly)
                     .font(.caption)
                     .padding(.horizontal)
@@ -553,7 +569,13 @@ public struct SearchSheet: View {
                         Section("Your Personal Study (\(personalHits.count))") {
                             ForEach(personalHits) { hit in
                                 Button {
-                                    if let nid = hit.noteId, let note = viewModel.notes.first(where: { $0.id == nid }) {
+                                    if let sid = hit.studyId, let study = viewModel.studySessions.first(where: { $0.id == sid }) {
+                                        dismiss()
+                                        viewModel.activateStudy(study)
+                                        if let b = hit.bookId, let c = hit.chapter {
+                                            viewModel.navigate(to: VerseRef(bookId: b, chapter: c, verse: hit.verse))
+                                        }
+                                    } else if let nid = hit.noteId, let note = viewModel.notes.first(where: { $0.id == nid }) {
                                         dismiss()
                                         viewModel.openExistingNotebook(note)
                                     } else if let b = hit.bookId, let c = hit.chapter {
@@ -602,7 +624,7 @@ public struct SearchSheet: View {
                         }
                     }
 
-                    Section("Scripture Results (\(results.count))") {
+                    Section("Scripture Results (\(results.count.formatted()))") {
                         ForEach(results) { item in
                             Button {
                                 viewModel.navigate(to: VerseRef(bookId: item.bookId, chapter: item.chapter, verse: item.verse))
@@ -612,9 +634,8 @@ public struct SearchSheet: View {
                                     Text(item.referenceLabel)
                                         .font(.subheadline.weight(.semibold))
                                         .foregroundStyle(Color.accentColor)
-                                    Text(item.text)
+                                    Text(highlightedText(item.text))
                                         .font(.system(size: 15, design: .serif))
-                                        .foregroundStyle(.primary)
                                 }
                             }
                         }
@@ -631,13 +652,60 @@ public struct SearchSheet: View {
         }
     }
 
+    private var matchModeHint: String {
+        switch matchMode {
+        case .exact:
+            return "Exact whole word only (e.g. \"sin\" matches sin, not sins or sinner)"
+        case .wordStartsWith:
+            return "Words starting with term (e.g. \"sin\" matches sin, sins, sinner, sinful, sinned)"
+        case .contains:
+            return "Anywhere inside a word (e.g. \"sin\" also matches blessing, missing)"
+        case .meaning:
+            return "Offline AI vector search by concept (e.g. \"comfort when grieving\", \"wisdom about money\")"
+        }
+    }
+
+    private func highlightedText(_ text: String) -> AttributedString {
+        var attr = AttributedString(text)
+        attr.foregroundColor = .primary
+        let tokens = query
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+        guard !tokens.isEmpty else { return attr }
+
+        for tok in tokens {
+            let escaped = NSRegularExpression.escapedPattern(for: tok)
+            let pattern: String
+            switch matchMode {
+            case .exact:
+                pattern = "\\b\(escaped)\\b"
+            case .wordStartsWith, .meaning:
+                pattern = "\\b\(escaped)[A-Za-z0-9]*"
+            case .contains:
+                pattern = escaped
+            }
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { continue }
+            let nsRange = NSRange(text.startIndex..., in: text)
+            for match in regex.matches(in: text, range: nsRange) {
+                if let strRange = Range(match.range, in: text),
+                   let attrRange = Range(strRange, in: attr) {
+                    attr[attrRange].font = .system(size: 15, weight: .bold, design: .serif)
+                    attr[attrRange].backgroundColor = Color.yellow.opacity(0.45)
+                }
+            }
+        }
+        return attr
+    }
+
     private func runSearch() {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         strongsHit = viewModel.referenceDB.lookupStrongs(id: trimmed)
         personalHits = viewModel.studyDB.searchPersonalStudy(query: trimmed, limit: 25)
         results = viewModel.referenceDB.searchScripture(
             query: trimmed,
-            scopeBookId: currentBookOnly ? viewModel.currentBookId : nil
+            scopeBookId: currentBookOnly ? viewModel.currentBookId : nil,
+            matchMode: matchMode,
+            limit: nil
         )
     }
 }
@@ -879,23 +947,97 @@ public struct ViewSettingsSheet: View {
     @ObservedObject var viewModel: BibleWorkspaceViewModel
     @Environment(\.dismiss) private var dismiss
 
+    @State private var editingCustomPalette: CustomThemePalette? = nil
+    @State private var pendingHandednessChange: Bool? = nil
+
     public var body: some View {
         NavigationStack {
             Form {
-                Section("Reading Theme & Scripture Text") {
-                    Picker("Theme", selection: $viewModel.theme) {
-                        ForEach(ReadingTheme.allCases) { t in
-                            Text(t.rawValue).tag(t)
+                // THEMES & CUSTOM THEME STUDIO
+                Section {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 94), spacing: 10)], spacing: 10) {
+                        ForEach(viewModel.allAvailableThemes) { t in
+                            let selected = (viewModel.theme.id == t.id)
+                            Button {
+                                viewModel.theme = t
+                                viewModel.persistAppearancePreferences()
+                            } label: {
+                                VStack(spacing: 6) {
+                                    ZStack {
+                                        RoundedRectangle(cornerRadius: 10)
+                                            .fill(t.canvasBackground)
+                                            .frame(height: 44)
+                                            .overlay(
+                                                HStack(spacing: 5) {
+                                                    Text("Aa")
+                                                        .font(.system(size: 16, weight: .semibold, design: .serif))
+                                                        .foregroundStyle(t.primaryText)
+                                                    Circle()
+                                                        .fill(t.accentBlue)
+                                                        .frame(width: 9, height: 9)
+                                                    Circle()
+                                                        .fill(t.redLetterColor)
+                                                        .frame(width: 9, height: 9)
+                                                }
+                                            )
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: 10)
+                                                    .stroke(selected ? t.accentBlue : t.dividerColor, lineWidth: selected ? 2.5 : 1)
+                                            )
+                                    }
+                                    Text(t.rawValue)
+                                        .font(.caption2.weight(selected ? .bold : .medium))
+                                        .foregroundStyle(selected ? viewModel.theme.accentBlue : .primary)
+                                        .lineLimit(1)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .contextMenu {
+                                if t.isCustom,
+                                   let cid = t.id.split(separator: ":").last.map(String.init),
+                                   let pal = viewModel.customThemes.first(where: { $0.id == cid }) {
+                                    Button("Edit Custom Theme") { editingCustomPalette = pal }
+                                    Button("Delete Theme", role: .destructive) { viewModel.deleteCustomTheme(pal) }
+                                }
+                            }
                         }
                     }
-                    .pickerStyle(.segmented)
-                    Toggle("Red-Letter Words of Christ", isOn: $viewModel.showRedLetter)
-                    Toggle("Translator-Supplied Italics", isOn: $viewModel.showItalics)
-                    Toggle("Show Verse Numbers", isOn: $viewModel.showVerseNumbers)
+                    .padding(.vertical, 4)
+
+                    Button {
+                        editingCustomPalette = CustomThemePalette(
+                            name: "My Study Theme",
+                            canvasHex: viewModel.theme.canvasHex,
+                            textHex: viewModel.theme.primaryTextHex,
+                            accentHex: viewModel.theme.accentHex,
+                            redLetterHex: viewModel.theme.redLetterHex
+                        )
+                    } label: {
+                        Label("Create Custom Theme…", systemImage: "paintpalette")
+                            .font(.subheadline.weight(.medium))
+                    }
+                } header: {
+                    Text("Reading Themes")
+                } footer: {
+                    Text("Long-press any custom theme to edit or delete it. You can also export Theme JSON from the Theme Studio.")
                 }
 
-                Section("Workspace Mode & Panels") {
-                    Picker("Mode", selection: Binding(
+                // HANDEDNESS & WORKSPACE LAYOUT
+                Section {
+                    Picker("Handedness", selection: Binding(
+                        get: { viewModel.isLeftHandedLayout },
+                        set: { newVal in
+                            if newVal != viewModel.isLeftHandedLayout {
+                                pendingHandednessChange = newVal
+                            }
+                        }
+                    )) {
+                        Text("Right-Handed").tag(false)
+                        Text("Left-Handed").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+
+                    Picker("Workspace Mode", selection: Binding(
                         get: { viewModel.workspaceMode },
                         set: { viewModel.applyMode($0) }
                     )) {
@@ -903,15 +1045,51 @@ public struct ViewSettingsSheet: View {
                             Text(m.rawValue).tag(m)
                         }
                     }
-                    Toggle("Show Reference Panel (Left)", isOn: Binding(
+
+                    Toggle(viewModel.isLeftHandedLayout ? "Show Study Desk (Right)" : "Show Study Desk (Left)", isOn: Binding(
                         get: { viewModel.showReferencePanel },
                         set: { _ in viewModel.toggleReferencePanel() }
                     ))
-                    Toggle("Show Journal Margin (Right)", isOn: Binding(
+                    Toggle(viewModel.isLeftHandedLayout ? "Show Journal Margin (Left)" : "Show Journal Margin (Right)", isOn: Binding(
                         get: { viewModel.showJournalPanel },
                         set: { _ in viewModel.toggleJournalPanel() }
                     ))
                     Toggle("Show Overlapping Ink in Reading Mode", isOn: $viewModel.showInkInReadingMode)
+                } header: {
+                    Text("Handedness & Workspace")
+                } footer: {
+                    Text("Left-Handed Mode places the Apple Pencil Journal Margin on the left and docks the Study Desk on the right.")
+                }
+
+                // TYPOGRAPHY (BIBLE + STUDY DESK)
+                Section("Typography & Readability") {
+                    Picker("Scripture Font", selection: $viewModel.scriptureFontDesign) {
+                        ForEach(ScriptureFontDesign.allCases) { d in
+                            Text(d.rawValue).tag(d)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    VStack(alignment: .leading) {
+                        Text("Scripture Size: \(Int(viewModel.fontSize)) pt")
+                        Slider(value: $viewModel.fontSize, in: 14...28, step: 1)
+                    }
+                    VStack(alignment: .leading) {
+                        Text("Scripture Line Spacing: \(Int(viewModel.lineSpacing)) pt")
+                        Slider(value: $viewModel.lineSpacing, in: 4...16, step: 1)
+                    }
+                    VStack(alignment: .leading) {
+                        Text("Study Desk, Refs & Commentaries Size: \(Int(viewModel.studyDeskFontSize)) pt")
+                        Slider(value: $viewModel.studyDeskFontSize, in: 11...22, step: 1)
+                    }
+                }
+
+                // SCRIPTURE DISPLAY & PULPIT COMFORTS
+                Section("Scripture & Reading Comforts") {
+                    Toggle("Red-Letter Words of Christ", isOn: $viewModel.showRedLetter)
+                    Toggle("Translator-Supplied Italics", isOn: $viewModel.showItalics)
+                    Toggle("Show Verse Numbers", isOn: $viewModel.showVerseNumbers)
+                    Toggle("Keep Screen Awake While Reading", isOn: $viewModel.keepScreenAwake)
                 }
 
                 Section("Journal Paper Style") {
@@ -921,17 +1099,6 @@ public struct ViewSettingsSheet: View {
                         }
                     }
                     .pickerStyle(.segmented)
-                }
-
-                Section("Typography") {
-                    VStack(alignment: .leading) {
-                        Text("Font Size: \(Int(viewModel.fontSize)) pt")
-                        Slider(value: $viewModel.fontSize, in: 14...28, step: 1)
-                    }
-                    VStack(alignment: .leading) {
-                        Text("Line Spacing: \(Int(viewModel.lineSpacing)) pt")
-                        Slider(value: $viewModel.lineSpacing, in: 4...16, step: 1)
-                    }
                 }
             }
             .navigationTitle("Reading & Workspace View")
@@ -943,6 +1110,233 @@ public struct ViewSettingsSheet: View {
                         dismiss()
                     }
                 }
+            }
+            .sheet(item: $editingCustomPalette) { palette in
+                CustomThemeStudioSheet(viewModel: viewModel, initialPalette: palette)
+            }
+            .alert("Switch Handedness?", isPresented: Binding(
+                get: { pendingHandednessChange != nil },
+                set: { if !$0 { pendingHandednessChange = nil } }
+            )) {
+                Button("Cancel", role: .cancel) { pendingHandednessChange = nil }
+                Button("Switch Anyway", role: .destructive) {
+                    if let target = pendingHandednessChange {
+                        viewModel.isLeftHandedLayout = target
+                        viewModel.persistAppearancePreferences()
+                    }
+                    pendingHandednessChange = nil
+                }
+            } message: {
+                Text("Switching handedness moves the Journal Margin and Top Menu to the opposite side. Any existing handwriting or margin notes will stay at their original positions and may not line up with the new side.")
+            }
+        }
+    }
+}
+
+public struct HandednessOnboardingSheet: View {
+    @ObservedObject var viewModel: BibleWorkspaceViewModel
+    @State private var chooseLeftHanded: Bool = false
+
+    public var body: some View {
+        NavigationStack {
+            VStack(spacing: 22) {
+                VStack(spacing: 8) {
+                    Image(systemName: "pencil.and.outline")
+                        .font(.system(size: 42))
+                        .foregroundStyle(viewModel.theme.accentBlue)
+                    Text("Welcome to Sword & Quill")
+                        .font(.title.bold())
+                    Text("Choose how you write with Apple Pencil so we can set up your Study Desk and Journal Margin on your natural side from Day 1.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 16)
+                }
+                .padding(.top, 16)
+
+                HStack(spacing: 14) {
+                    choiceCard(
+                        title: "Right-Handed",
+                        subtitle: "Study Desk on Left\nJournal Margin on Right",
+                        icon: "hand.raised.fill",
+                        selected: !chooseLeftHanded
+                    ) {
+                        chooseLeftHanded = false
+                    }
+
+                    choiceCard(
+                        title: "Left-Handed",
+                        subtitle: "Journal Margin on Left\nStudy Desk on Right",
+                        icon: "hand.raised.fill",
+                        selected: chooseLeftHanded,
+                        flipIcon: true
+                    ) {
+                        chooseLeftHanded = true
+                    }
+                }
+                .padding(.horizontal, 20)
+
+                Text("You can change this later in Settings, though existing handwritten notes stay anchored to the side where they were written.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 28)
+
+                Spacer()
+
+                Button {
+                    viewModel.completeHandednessOnboarding(isLeftHanded: chooseLeftHanded)
+                } label: {
+                    Text("Start Studying")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(viewModel.theme.accentBlue)
+                .padding(.horizontal, 24)
+                .padding(.bottom, 20)
+            }
+            .interactiveDismissDisabled()
+        }
+    }
+
+    @ViewBuilder
+    private func choiceCard(title: String, subtitle: String, icon: String, selected: Bool, flipIcon: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 10) {
+                Image(systemName: icon)
+                    .font(.system(size: 28))
+                    .scaleEffect(x: flipIcon ? -1 : 1, y: 1)
+                    .foregroundStyle(selected ? viewModel.theme.accentBlue : .secondary)
+                Text(title)
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 20)
+            .padding(.horizontal, 12)
+            .background(selected ? viewModel.theme.accentBlue.opacity(0.12) : Color.secondary.opacity(0.08))
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(selected ? viewModel.theme.accentBlue : Color.clear, lineWidth: 2)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+public struct CustomThemeStudioSheet: View {
+    @ObservedObject var viewModel: BibleWorkspaceViewModel
+    let initialPalette: CustomThemePalette
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var name: String = ""
+    @State private var canvasColor: Color = Color(red: 0.969, green: 0.949, blue: 0.902)
+    @State private var textColor: Color = Color(red: 0.176, green: 0.145, blue: 0.110)
+    @State private var accentColor: Color = Color(red: 0.180, green: 0.380, blue: 0.620)
+    @State private var redLetterColor: Color = Color(red: 0.620, green: 0.145, blue: 0.145)
+    @State private var copiedJSON: Bool = false
+
+    private var currentPalette: CustomThemePalette {
+        CustomThemePalette(
+            id: initialPalette.id,
+            name: name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Custom Theme" : name.trimmingCharacters(in: .whitespacesAndNewlines),
+            canvasHex: UIColor(canvasColor).toHexString(),
+            textHex: UIColor(textColor).toHexString(),
+            accentHex: UIColor(accentColor).toHexString(),
+            redLetterHex: UIColor(redLetterColor).toHexString()
+        )
+    }
+
+    private var previewTheme: ReadingTheme {
+        ReadingTheme.fromCustom(currentPalette)
+    }
+
+    public var body: some View {
+        NavigationStack {
+            Form {
+                Section("Live Preview") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("John 14")
+                                .font(.system(size: 18, weight: .bold, design: .serif))
+                                .foregroundStyle(previewTheme.primaryText)
+                            Spacer()
+                            Text("Strong's G3598")
+                                .font(.caption2.weight(.bold))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(previewTheme.accentBlue.opacity(0.16))
+                                .foregroundStyle(previewTheme.accentBlue)
+                                .clipShape(Capsule())
+                        }
+                        Text("6 ")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(previewTheme.secondaryText)
+                        + Text("Jesus saith unto him, ")
+                            .font(.system(size: 16, design: .serif))
+                            .foregroundStyle(previewTheme.primaryText)
+                        + Text("I am the way, the truth, and the life: no man cometh unto the Father, but by me.")
+                            .font(.system(size: 16, design: .serif))
+                            .foregroundStyle(previewTheme.redLetterColor)
+                    }
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(previewTheme.canvasBackground)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(previewTheme.dividerColor, lineWidth: 1))
+                    .listRowInsets(EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12))
+                }
+
+                Section("Theme Name & Colors") {
+                    TextField("Theme Name (e.g. Warm Linen, Espresso)", text: $name)
+                    ColorPicker("Paper / Background", selection: $canvasColor, supportsOpacity: false)
+                    ColorPicker("Primary Text", selection: $textColor, supportsOpacity: false)
+                    ColorPicker("Accent & Links", selection: $accentColor, supportsOpacity: false)
+                    ColorPicker("Red-Letter Words", selection: $redLetterColor, supportsOpacity: false)
+                }
+
+                Section {
+                    Button {
+                        if let data = try? JSONEncoder().encode(currentPalette),
+                           let str = String(data: data, encoding: .utf8) {
+                            UIPasteboard.general.string = str
+                            copiedJSON = true
+                        }
+                    } label: {
+                        Label(copiedJSON ? "Copied Theme JSON!" : "Copy Theme JSON (for Shipping Presets)", systemImage: copiedJSON ? "checkmark.circle.fill" : "doc.on.doc")
+                            .font(.subheadline)
+                    }
+                } footer: {
+                    Text("Chrome bars, panels, dividers, and light/dark UI chrome are automatically derived for clean contrast.")
+                }
+            }
+            .navigationTitle("Theme Studio")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save & Apply") {
+                        viewModel.saveCustomTheme(currentPalette, applyImmediately: true)
+                        dismiss()
+                    }
+                    .fontWeight(.semibold)
+                }
+            }
+            .onAppear {
+                name = initialPalette.name
+                canvasColor = Color(uiColor: UIColor(hex: initialPalette.canvasHex) ?? .systemBackground)
+                textColor = Color(uiColor: UIColor(hex: initialPalette.textHex) ?? .label)
+                accentColor = Color(uiColor: UIColor(hex: initialPalette.accentHex) ?? .systemBlue)
+                redLetterColor = Color(uiColor: UIColor(hex: initialPalette.redLetterHex) ?? .systemRed)
             }
         }
     }

@@ -293,13 +293,36 @@ public struct ReadingHistoryItem: Identifiable, Hashable, Sendable {
 
 public struct PersonalSearchHit: Identifiable, Hashable, Sendable {
     public let id: String
-    public let kind: String // "Note", "Clip", "Bookmark"
+    public let kind: String // "Note", "Clip", "Bookmark", "Study", "Study Trail"
     public let title: String
     public let snippet: String
     public let bookId: Int?
     public let chapter: Int?
     public let verse: Int?
     public let noteId: String?
+    public let studyId: String?
+
+    public init(
+        id: String,
+        kind: String,
+        title: String,
+        snippet: String,
+        bookId: Int?,
+        chapter: Int?,
+        verse: Int?,
+        noteId: String?,
+        studyId: String? = nil
+    ) {
+        self.id = id
+        self.kind = kind
+        self.title = title
+        self.snippet = snippet
+        self.bookId = bookId
+        self.chapter = chapter
+        self.verse = verse
+        self.noteId = noteId
+        self.studyId = studyId
+    }
 }
 
 // MARK: - Notability-Style Stickers
@@ -381,11 +404,13 @@ public struct ChapterInkAnchors: Codable, Hashable, Sendable {
     public let scriptureWidth: Double
     public let canvasWidth: Double
     public let verseRects: [Int: VerseAnchorRect]
+    public let isLeftHanded: Bool?
 
-    public init(scriptureWidth: Double, canvasWidth: Double, verseRects: [Int: VerseAnchorRect]) {
+    public init(scriptureWidth: Double, canvasWidth: Double, verseRects: [Int: VerseAnchorRect], isLeftHanded: Bool? = false) {
         self.scriptureWidth = scriptureWidth
         self.canvasWidth = canvasWidth
         self.verseRects = verseRects
+        self.isLeftHanded = isLeftHanded
     }
 }
 
@@ -513,87 +538,175 @@ public struct StudyMarginLink: Identifiable, Hashable, Sendable {
     public let updatedAt: String
 }
 
-public enum ReadingTheme: String, CaseIterable, Identifiable, Sendable {
-    case paperSepia = "Paper"
-    case light = "Light"
-    case dark = "Dark"
+public enum ScriptureFontDesign: String, CaseIterable, Identifiable, Sendable {
+    case serif = "Classic Serif"
+    case sans = "Clean Sans"
+    case rounded = "Soft Rounded"
 
     public var id: String { rawValue }
 
-    public var canvasBackground: Color {
+    public var fontDesign: Font.Design {
         switch self {
-        case .paperSepia: return Color(red: 0.969, green: 0.949, blue: 0.902)
-        case .light: return Color(red: 0.992, green: 0.992, blue: 0.988)
-        case .dark: return Color(red: 0.125, green: 0.129, blue: 0.137)
+        case .serif: return .serif
+        case .sans: return .default
+        case .rounded: return .rounded
         }
+    }
+}
+
+public struct CustomThemePalette: Identifiable, Codable, Hashable, Sendable {
+    public let id: String
+    public var name: String
+    public var canvasHex: String
+    public var textHex: String
+    public var accentHex: String
+    public var redLetterHex: String
+
+    public init(id: String = UUID().uuidString, name: String, canvasHex: String, textHex: String, accentHex: String, redLetterHex: String) {
+        self.id = id
+        self.name = name
+        self.canvasHex = canvasHex
+        self.textHex = textHex
+        self.accentHex = accentHex
+        self.redLetterHex = redLetterHex
+    }
+}
+
+public struct ReadingTheme: Identifiable, Hashable, Sendable {
+    public let id: String
+    public let rawValue: String
+    public let canvasHex: String
+    public let chromeHex: String
+    public let panelHex: String
+    public let primaryTextHex: String
+    public let secondaryTextHex: String
+    public let accentHex: String
+    public let dividerHex: String
+    public let redLetterHex: String
+    public let isDark: Bool
+    public let isCustom: Bool
+
+    public static let paperSepia = ReadingTheme(
+        id: "Paper", rawValue: "Paper",
+        canvasHex: "#F7F2E6", chromeHex: "#F0E9DA", panelHex: "#F3EDDF",
+        primaryTextHex: "#2D251C", secondaryTextHex: "#746655",
+        accentHex: "#2E619E", dividerHex: "#D1C7B4", redLetterHex: "#9E2525",
+        isDark: false, isCustom: false
+    )
+
+    public static let light = ReadingTheme(
+        id: "Light", rawValue: "Light",
+        canvasHex: "#FDFDFC", chromeHex: "#F5F5F6", panelHex: "#F8F8F9",
+        primaryTextHex: "#1C1C1F", secondaryTextHex: "#6E6F74",
+        accentHex: "#2469C2", dividerHex: "#D6D7DB", redLetterHex: "#B02121",
+        isDark: false, isCustom: false
+    )
+
+    public static let agedParchment = ReadingTheme(
+        id: "Parchment", rawValue: "Parchment",
+        canvasHex: "#EFE6D0", chromeHex: "#E6DAC0", panelHex: "#EAE0C8",
+        primaryTextHex: "#2A1F14", secondaryTextHex: "#6D5A44",
+        accentHex: "#7C4D1E", dividerHex: "#C7B79A", redLetterHex: "#8F2222",
+        isDark: false, isCustom: false
+    )
+
+    public static let sageStudy = ReadingTheme(
+        id: "Sage", rawValue: "Sage",
+        canvasHex: "#EEF3EC", chromeHex: "#E2EBE0", panelHex: "#E7EFE5",
+        primaryTextHex: "#1D2820", secondaryTextHex: "#55685A",
+        accentHex: "#2C6B54", dividerHex: "#C2D1C0", redLetterHex: "#9E2A2B",
+        isDark: false, isCustom: false
+    )
+
+    public static let dark = ReadingTheme(
+        id: "Dark", rawValue: "Dark",
+        canvasHex: "#202123", chromeHex: "#18191B", panelHex: "#282A2D",
+        primaryTextHex: "#F2EEE6", secondaryTextHex: "#A1A2A7",
+        accentHex: "#88B3EB", dividerHex: "#48494B", redLetterHex: "#EB7474",
+        isDark: true, isCustom: false
+    )
+
+    public static let midnightNavy = ReadingTheme(
+        id: "Midnight", rawValue: "Midnight",
+        canvasHex: "#121A26", chromeHex: "#0D131D", panelHex: "#182233",
+        primaryTextHex: "#ECEFF4", secondaryTextHex: "#8FA0B8",
+        accentHex: "#7DB0F2", dividerHex: "#2D3C54", redLetterHex: "#F07A7A",
+        isDark: true, isCustom: false
+    )
+
+    public static let allCases: [ReadingTheme] = [
+        .paperSepia, .light, .agedParchment, .sageStudy, .dark, .midnightNavy
+    ]
+
+    public init?(rawValue: String) {
+        if let found = Self.allCases.first(where: { $0.rawValue == rawValue || $0.id == rawValue }) {
+            self = found
+            return
+        }
+        return nil
     }
 
-    public var chromeBackground: Color {
-        switch self {
-        case .paperSepia: return Color(red: 0.941, green: 0.914, blue: 0.855)
-        case .light: return Color(red: 0.960, green: 0.960, blue: 0.965)
-        case .dark: return Color(red: 0.095, green: 0.098, blue: 0.106)
-        }
+    public init(
+        id: String, rawValue: String,
+        canvasHex: String, chromeHex: String, panelHex: String,
+        primaryTextHex: String, secondaryTextHex: String,
+        accentHex: String, dividerHex: String, redLetterHex: String,
+        isDark: Bool, isCustom: Bool
+    ) {
+        self.id = id
+        self.rawValue = rawValue
+        self.canvasHex = canvasHex
+        self.chromeHex = chromeHex
+        self.panelHex = panelHex
+        self.primaryTextHex = primaryTextHex
+        self.secondaryTextHex = secondaryTextHex
+        self.accentHex = accentHex
+        self.dividerHex = dividerHex
+        self.redLetterHex = redLetterHex
+        self.isDark = isDark
+        self.isCustom = isCustom
     }
 
-    public var panelBackground: Color {
-        switch self {
-        case .paperSepia: return Color(red: 0.953, green: 0.929, blue: 0.875)
-        case .light: return Color(red: 0.972, green: 0.972, blue: 0.976)
-        case .dark: return Color(red: 0.157, green: 0.165, blue: 0.176)
-        }
+    /// Builds a harmonious custom theme from 4 user-chosen colors, automatically computing chrome, panels, dividers, and light/dark mode.
+    public static func fromCustom(_ p: CustomThemePalette) -> ReadingTheme {
+        let baseUI = UIColor(hex: p.canvasHex) ?? UIColor(red: 0.969, green: 0.949, blue: 0.902, alpha: 1)
+        let textUI = UIColor(hex: p.textHex) ?? UIColor(red: 0.176, green: 0.145, blue: 0.110, alpha: 1)
+        let dark = baseUI.isDarkColor
+        let chrome = baseUI.adjustedBrightness(by: dark ? -0.04 : -0.035)
+        let panel = baseUI.adjustedBrightness(by: dark ? 0.045 : -0.02)
+        let divider = baseUI.blended(with: textUI, fraction: dark ? 0.22 : 0.18)
+        let secondary = textUI.blended(with: baseUI, fraction: 0.36)
+        return ReadingTheme(
+            id: "custom:\(p.id)",
+            rawValue: p.name,
+            canvasHex: p.canvasHex,
+            chromeHex: chrome.toHexString(),
+            panelHex: panel.toHexString(),
+            primaryTextHex: p.textHex,
+            secondaryTextHex: secondary.toHexString(),
+            accentHex: p.accentHex,
+            dividerHex: divider.toHexString(),
+            redLetterHex: p.redLetterHex,
+            isDark: dark,
+            isCustom: true
+        )
     }
 
-    public var primaryText: Color {
-        switch self {
-        case .paperSepia: return Color(red: 0.176, green: 0.145, blue: 0.110)
-        case .light: return Color(red: 0.110, green: 0.110, blue: 0.120)
-        case .dark: return Color(red: 0.949, green: 0.933, blue: 0.902)
-        }
-    }
-
-    public var secondaryText: Color {
-        switch self {
-        case .paperSepia: return Color(red: 0.455, green: 0.400, blue: 0.335)
-        case .light: return Color(red: 0.430, green: 0.435, blue: 0.455)
-        case .dark: return Color(red: 0.630, green: 0.635, blue: 0.655)
-        }
-    }
-
-    public var accentBlue: Color {
-        switch self {
-        case .paperSepia: return Color(red: 0.180, green: 0.380, blue: 0.620)
-        case .light: return Color(red: 0.140, green: 0.410, blue: 0.760)
-        case .dark: return Color(red: 0.533, green: 0.702, blue: 0.922)
-        }
-    }
-
-    public var dividerColor: Color {
-        switch self {
-        case .paperSepia: return Color(red: 0.820, green: 0.780, blue: 0.705)
-        case .light: return Color(red: 0.840, green: 0.845, blue: 0.860)
-        case .dark: return Color(red: 0.282, green: 0.286, blue: 0.294)
-        }
-    }
+    public var canvasBackground: Color { Color(uiColor: UIColor(hex: canvasHex) ?? .systemBackground) }
+    public var chromeBackground: Color { Color(uiColor: UIColor(hex: chromeHex) ?? .secondarySystemBackground) }
+    public var panelBackground: Color { Color(uiColor: UIColor(hex: panelHex) ?? .secondarySystemBackground) }
+    public var primaryText: Color { Color(uiColor: UIColor(hex: primaryTextHex) ?? .label) }
+    public var secondaryText: Color { Color(uiColor: UIColor(hex: secondaryTextHex) ?? .secondaryLabel) }
+    public var accentBlue: Color { Color(uiColor: UIColor(hex: accentHex) ?? .systemBlue) }
+    public var dividerColor: Color { Color(uiColor: UIColor(hex: dividerHex) ?? .separator) }
+    public var redLetterColor: Color { Color(uiColor: UIColor(hex: redLetterHex) ?? .systemRed) }
 
     public var paperLineColor: Color {
-        switch self {
-        case .paperSepia: return Color(red: 0.80, green: 0.75, blue: 0.66).opacity(0.45)
-        case .light: return Color.gray.opacity(0.20)
-        case .dark: return Color.white.opacity(0.08)
-        }
-    }
-
-    public var redLetterColor: Color {
-        switch self {
-        case .paperSepia: return Color(red: 0.620, green: 0.145, blue: 0.145)
-        case .light: return Color(red: 0.690, green: 0.130, blue: 0.130)
-        case .dark: return Color(red: 0.920, green: 0.455, blue: 0.455)
-        }
+        isDark ? Color.white.opacity(0.08) : dividerColor.opacity(0.45)
     }
 
     public var preferredColorScheme: ColorScheme {
-        self == .dark ? .dark : .light
+        isDark ? .dark : .light
     }
 }
 
@@ -619,6 +732,7 @@ public enum LeftPanelTab: String, CaseIterable, Identifiable, Sendable {
     case crossRefs = "TSK Cross-Refs"
     case strongs = "Interlinear"
     case dictionary = "Dictionaries"
+    case commentary = "Commentaries"
     case places = "Places"
     case parallel = "Parallel Bible"
 
@@ -629,6 +743,7 @@ public enum LeftPanelTab: String, CaseIterable, Identifiable, Sendable {
         case .crossRefs: return "arrow.triangle.branch"
         case .strongs: return "character.book.closed"
         case .dictionary: return "text.book.closed"
+        case .commentary: return "text.quote"
         case .places: return "map"
         case .parallel: return "book.pages"
         }
@@ -726,5 +841,46 @@ public extension UIColor {
         let g = CGFloat((value >> 8) & 0xFF) / 255.0
         let b = CGFloat(value & 0xFF) / 255.0
         self.init(red: r, green: g, blue: b, alpha: 1.0)
+    }
+
+    var isDarkColor: Bool {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 1
+        getRed(&r, green: &g, blue: &b, alpha: &a)
+        let luminance = 0.299 * r + 0.587 * g + 0.114 * b
+        return luminance < 0.5
+    }
+
+    func adjustedBrightness(by delta: CGFloat) -> UIColor {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 1
+        getRed(&r, green: &g, blue: &b, alpha: &a)
+        return UIColor(
+            red: min(1, max(0, r + delta)),
+            green: min(1, max(0, g + delta)),
+            blue: min(1, max(0, b + delta)),
+            alpha: a
+        )
+    }
+
+    func blended(with other: UIColor, fraction: CGFloat) -> UIColor {
+        let f = min(1, max(0, fraction))
+        var r1: CGFloat = 0, g1: CGFloat = 0, b1: CGFloat = 0, a1: CGFloat = 1
+        var r2: CGFloat = 0, g2: CGFloat = 0, b2: CGFloat = 0, a2: CGFloat = 1
+        getRed(&r1, green: &g1, blue: &b1, alpha: &a1)
+        other.getRed(&r2, green: &g2, blue: &b2, alpha: &a2)
+        return UIColor(
+            red: r1 + (r2 - r1) * f,
+            green: g1 + (g2 - g1) * f,
+            blue: b1 + (b2 - b1) * f,
+            alpha: 1.0
+        )
+    }
+
+    func toHexString() -> String {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 1
+        getRed(&r, green: &g, blue: &b, alpha: &a)
+        let ri = Int(round(min(1, max(0, r)) * 255))
+        let gi = Int(round(min(1, max(0, g)) * 255))
+        let bi = Int(round(min(1, max(0, b)) * 255))
+        return String(format: "#%02X%02X%02X", ri, gi, bi)
     }
 }

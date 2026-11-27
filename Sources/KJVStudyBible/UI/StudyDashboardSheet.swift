@@ -12,6 +12,7 @@ public struct StudyDashboardSheet: View {
     @State private var pendingRestoreURL: URL? = nil
     @State private var showRestoreConfirm: Bool = false
     @State private var backupShareItem: ShareSheetItem? = nil
+    @State private var showSupportSheet: Bool = false
     @State private var feedbackMessage: String? = nil
     @State private var feedbackIsError: Bool = false
 
@@ -127,7 +128,7 @@ public struct StudyDashboardSheet: View {
                         Text("LIFELONG STUDY BACKUP & RESTORE")
                             .font(.caption.weight(.bold))
                             .foregroundStyle(.secondary)
-                        Text("Your Apple Pencil ink, highlights, Sermon Notebooks, stickers, clips, and bookmarks live in a single local SQLite file. Export anytime to Files, iCloud Drive, or AirDrop—or restore a previous backup below.")
+                        Text("Your Apple Pencil ink, highlights, Sermon Notebooks, stickers, clips, and bookmarks live in a single local MagQLite (.mql) file. Export anytime to Files, iCloud Drive, or AirDrop—or restore a previous .mql or legacy .sqlite backup below.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
 
@@ -149,7 +150,7 @@ public struct StudyDashboardSheet: View {
                                     feedbackIsError = true
                                 }
                             } label: {
-                                Label("Export Backup (.sqlite)", systemImage: "square.and.arrow.up")
+                                Label("Export Backup (.mql)", systemImage: "square.and.arrow.up")
                                     .font(.subheadline.weight(.semibold))
                                     .lineLimit(1)
                             }
@@ -174,7 +175,7 @@ public struct StudyDashboardSheet: View {
                     .overlay(RoundedRectangle(cornerRadius: 14).stroke(viewModel.theme.dividerColor, lineWidth: 1))
 
                     // Sword & Quill Pro & Support the Builder Card
-                    VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 10) {
                         HStack(spacing: 8) {
                             Image(systemName: "heart.text.square.fill")
                                 .font(.title3)
@@ -183,17 +184,27 @@ public struct StudyDashboardSheet: View {
                                 .font(.caption.weight(.bold))
                                 .foregroundStyle(.secondary)
                             Spacer()
-                            Text("PRO ACTIVE (DEV)")
+                            Text(viewModel.storeManager.isProUnlocked ? "PRO UNLOCKED" : "FREE EDITION")
                                 .font(.system(size: 9.5, weight: .bold))
                                 .foregroundStyle(.white)
                                 .padding(.horizontal, 7)
                                 .padding(.vertical, 2)
-                                .background(Color.orange)
+                                .background(viewModel.storeManager.isProUnlocked ? Color.green : Color.orange)
                                 .clipShape(Capsule())
                         }
-                        Text("God's Word, Apple Pencil journaling, and receiving shared lessons are always free and ad-free. Classroom Sharing (.sqstudy packages, Classroom QR Codes, & Printable Handout PDFs) and optional App Store Tips help support ongoing independent development of Sword & Quill.")
+                        Text("God's Word, Apple Pencil journaling, and receiving shared lessons are always free and ad-free. Classroom Pro and optional one-time tips help support ongoing independent development of Sword & Quill.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+
+                        Button {
+                            showSupportSheet = true
+                        } label: {
+                            Label(viewModel.storeManager.isProUnlocked ? "Leave a Tip / Manage Support" : "Unlock Classroom Pro & Support Tip Jar", systemImage: "cup.and.saucer.fill")
+                                .font(.subheadline.weight(.semibold))
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.orange)
                     }
                     .padding(14)
                     .background(viewModel.theme.panelBackground)
@@ -214,6 +225,9 @@ public struct StudyDashboardSheet: View {
             }
             .sheet(item: $backupShareItem) { item in
                 ActivityShareSheet(url: item.url)
+            }
+            .sheet(isPresented: $showSupportSheet) {
+                SupportSwordAndQuillSheet(store: viewModel.storeManager, theme: viewModel.theme)
             }
             .fileImporter(
                 isPresented: $showFileImporter,

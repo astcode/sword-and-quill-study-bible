@@ -18,7 +18,9 @@ public final class BibleWorkspaceViewModel: ObservableObject {
     @Published public var chapterPlaces: [BiblicalPlace] = []
 
     // User study state for active chapter
-    @Published public var chapterDrawing: PKDrawing = PKDrawing()
+    // Intentionally NOT @Published: UnifiedBibleCanvas reads chapterDrawing only when drawingRevision changes,
+    // preventing full-workspace SwiftUI redraws while writing with Apple Pencil!
+    public var chapterDrawing: PKDrawing = PKDrawing()
     @Published public var drawingRevision: Int = 0
     @Published public var chapterHighlights: [Int: UserHighlight] = [:]
     @Published public var pinnedReferences: [PinnedReference] = []
@@ -38,6 +40,18 @@ public final class BibleWorkspaceViewModel: ObservableObject {
     @Published public var showHistorySheet: Bool = false
     @Published public var showMarginOCRScanner: Bool = false
     @Published public var showStudyDashboard: Bool = false
+    @Published public var showReadingPlans: Bool = false
+    @Published public var showMemoryDrills: Bool = false
+    @Published public var showSupportSheet: Bool = false
+    @Published public var showHandednessOnboarding: Bool = false
+    @Published public var audioSpeakingVerseNumber: Int? = nil
+    @Published public var isAudioBarVisible: Bool = false
+    public let audioPlayer = BibleAudioPlayer()
+    public let storeManager = StoreManager()
+    public let moduleManager = ModuleManager()
+    @Published public var showLibraryManager: Bool = false
+    @Published public var selectedCommentaryModuleId: String? = nil
+    @Published public var chapterCommentaryEntries: [CommentaryEntry] = []
     @Published public var backupExportURL: URL? = nil
     @Published public var activeShareSheetItem: ShareSheetItem? = nil
 
@@ -48,6 +62,10 @@ public final class BibleWorkspaceViewModel: ObservableObject {
     @Published public var chapterStudyLinks: [StudyMarginLink] = []
     @Published public var showNewStudySheet: Bool = false
     @Published public var showStudyTrailSheet: Bool = false
+    @Published public var showStudyLibrarySheet: Bool = false
+    @Published public var pinnedStudyIds: Set<String> = []
+    @Published public var archivedStudyIds: Set<String> = []
+    @Published public var starredTrailEntryIds: Set<String> = []
     @Published public var editingStudyMarginLink: StudyMarginLink? = nil
     @Published public var showAddStudyLinkSheet: Bool = false
     @Published public var sharingStudy: StudySession? = nil
@@ -81,6 +99,7 @@ public final class BibleWorkspaceViewModel: ObservableObject {
     @Published public var expandedReferenceVerses: Set<Int> = []
     @Published public var paperStyle: JournalPaperStyle = .ruled
     @Published public var journalZoomScale: CGFloat = 1.0
+    @Published public var leftPanelWidth: CGFloat = 0 // 0 = auto default; > 0 = user-dragged width
 
     // Parallel Bible Reader State (Left Panel Parallel Tab)
     @Published public var parallelBookId: Int = 40 // Matthew (great for Gospel harmony with John!)
@@ -91,16 +110,25 @@ public final class BibleWorkspaceViewModel: ObservableObject {
     @Published public var popoverVerse: Verse? = nil
 
     public var shouldShowInkOverlay: Bool {
-        workspaceMode != .reading || showInkInReadingMode
+        showJournalPanel || showInkInReadingMode
     }
 
     // Reading Appearance
     @Published public var theme: ReadingTheme = .paperSepia
+    @Published public var customThemes: [CustomThemePalette] = []
     @Published public var fontSize: Double = 19.0
+    @Published public var studyDeskFontSize: Double = 14.0
+    @Published public var scriptureFontDesign: ScriptureFontDesign = .serif
     @Published public var lineSpacing: Double = 8.0
     @Published public var showVerseNumbers: Bool = true
     @Published public var showRedLetter: Bool = true
     @Published public var showItalics: Bool = true
+    @Published public var isLeftHandedLayout: Bool = false
+    @Published public var keepScreenAwake: Bool = false {
+        didSet {
+            UIApplication.shared.isIdleTimerDisabled = keepScreenAwake
+        }
+    }
 
     // Writing Toolbox State (bottom bar)
     @Published public var showPenToolbox: Bool = false
@@ -143,6 +171,21 @@ public final class BibleWorkspaceViewModel: ObservableObject {
 
     public init() {
         self.referenceDB = ReferenceDatabase()
+        #if DEBUG
+        if let showcaseMode = ProcessInfo.processInfo.environment["SWORDQUILL_SHOWCASE"], !showcaseMode.isEmpty {
+            let tmpURL = FileManager.default.temporaryDirectory.appendingPathComponent("sq_showcase_\(showcaseMode).mql")
+            try? FileManager.default.removeItem(at: tmpURL)
+            try? FileManager.default.removeItem(at: URL(fileURLWithPath: tmpURL.path + ".wal"))
+            try? FileManager.default.removeItem(at: URL(fileURLWithPath: tmpURL.path + ".pages"))
+            self.studyDB = UserStudyDatabase(customURL: tmpURL)
+            self.books = referenceDB.allBooks()
+            reloadUserCollections()
+            navigate(to: VerseRef(bookId: 43, chapter: 14, verse: nil), pushHistory: true)
+            navigateParallel(bookId: 40, chapter: 5)
+            applyDebugShowcase(mode: showcaseMode)
+            return
+        }
+        #endif
         self.studyDB = UserStudyDatabase()
         self.books = referenceDB.allBooks()
 
@@ -243,7 +286,14 @@ public final class BibleWorkspaceViewModel: ObservableObject {
 
         if let loaded = studyDB.loadChapterInk(bookId: currentBookId, chapter: currentChapter, studyId: sid),
            let parsed = try? PKDrawing(data: loaded.data) {
-            chapterDrawing = parsed
+            // Heal any strokes that previously had non-identity PKStroke.transform (which causes PKMetalRenderer jumps on touch)
+            if parsed.strokes.contains(where: { !$0.transform.isIdentity }) {
+                let healed = PKDrawing(strokes: parsed.strokes.map { Self.bakedTranslatedStroke($0, dx: 0, dy: 0) })
+                chapterDrawing = healed
+                studyDB.saveChapterInk(bookId: currentBookId, chapter: currentChapter, data: healed.dataRepresentation(), fontSize: fontSize, anchors: loaded.anchors, studyId: sid)
+            } else {
+                chapterDrawing = parsed
+            }
             savedInkAnchors = loaded.anchors
         } else {
             chapterDrawing = PKDrawing()
@@ -261,6 +311,7 @@ public final class BibleWorkspaceViewModel: ObservableObject {
         verses = referenceDB.verses(bookId: ref.bookId, chapter: ref.chapter)
         crossRefsByVerse = referenceDB.crossReferences(bookId: ref.bookId, chapter: ref.chapter)
         chapterPlaces = referenceDB.placesForChapter(bookId: ref.bookId, chapter: ref.chapter)
+        reloadChapterCommentary()
         expandedReferenceVerses = []
         chapterHighlights = studyDB.highlights(bookId: ref.bookId, chapter: ref.chapter)
         currentVerseFrames = [:]
@@ -294,6 +345,34 @@ public final class BibleWorkspaceViewModel: ObservableObject {
             )
             activeStudyTrail = studyDB.studyTrailEntries(studyId: study.id)
         }
+    }
+
+    public func startChapterAudio(startingAtVerse: Int? = nil) {
+        guard !verses.isEmpty else { return }
+        isAudioBarVisible = true
+        audioPlayer.startChapter(
+            title: currentLocationTitle,
+            verses: verses,
+            startingAtVerse: startingAtVerse,
+            onHighlightVerse: { [weak self] vNum in
+                self?.audioSpeakingVerseNumber = vNum
+            },
+            onChapterFinished: { [weak self] in
+                guard let self else { return }
+                self.nextChapter()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    if self.audioPlayer.isActive {
+                        self.startChapterAudio(startingAtVerse: 1)
+                    }
+                }
+            }
+        )
+    }
+
+    public func stopChapterAudio() {
+        audioPlayer.stop(hideBar: true)
+        isAudioBarVisible = false
+        audioSpeakingVerseNumber = nil
     }
 
     public func goBack() {
@@ -472,7 +551,7 @@ public final class BibleWorkspaceViewModel: ObservableObject {
                 sourceLabel: sourceLabel,
                 excerpt: trimmedExcerpt,
                 userNote: trimmedNote,
-                posX: 430.0,
+                posX: defaultJournalMarginX(),
                 posY: yOffset,
                 updatedAt: ISO8601DateFormatter().string(from: Date())
             )
@@ -613,14 +692,52 @@ public final class BibleWorkspaceViewModel: ObservableObject {
         return ChapterInkAnchors(
             scriptureWidth: Double(currentScriptureWidth),
             canvasWidth: Double(currentCanvasWidth),
-            verseRects: map
+            verseRects: map,
+            isLeftHanded: isLeftHandedLayout
         )
+    }
+
+    public func defaultJournalMarginX(offset: Double = 0) -> Double {
+        if !showJournalPanel {
+            return 120.0 + offset
+        }
+        if isLeftHandedLayout {
+            return 28.0 + offset
+        }
+        let sWidth = currentScriptureWidth > 0 ? Double(currentScriptureWidth) : 430.0
+        return sWidth + 24.0 + offset
+    }
+
+    public func completeHandednessOnboarding(isLeftHanded: Bool) {
+        isLeftHandedLayout = isLeftHanded
+        studyDB.setPreference("has_completed_onboarding", value: "1")
+        persistAppearancePreferences()
+        showHandednessOnboarding = false
+    }
+
+    /// Bakes any existing `stroke.transform` plus `(dx, dy)` directly into `PKStrokePoint.location`
+    /// and resets `transform` to `.identity`, preventing iPadOS `PKMetalRenderer` jump/flicker bugs during live touch.
+    private static func bakedTranslatedStroke(_ stroke: PKStroke, dx: CGFloat, dy: CGFloat) -> PKStroke {
+        let combined = stroke.transform.concatenating(CGAffineTransform(translationX: dx, y: dy))
+        let bakedPoints: [PKStrokePoint] = stroke.path.map { pt in
+            PKStrokePoint(
+                location: pt.location.applying(combined),
+                timeOffset: pt.timeOffset,
+                size: pt.size,
+                opacity: pt.opacity,
+                force: pt.force,
+                azimuth: pt.azimuth,
+                altitude: pt.altitude
+            )
+        }
+        let newPath = PKStrokePath(controlPoints: bakedPoints, creationDate: stroke.path.creationDate)
+        return PKStroke(ink: stroke.ink, path: newPath, transform: .identity, mask: stroke.mask)
     }
 
     public func handleCanvasDrawingChanged(_ newDrawing: PKDrawing, canUndo: Bool, canRedo: Bool) {
         self.chapterDrawing = newDrawing
-        self.canUndo = canUndo
-        self.canRedo = canRedo
+        if self.canUndo != canUndo { self.canUndo = canUndo }
+        if self.canRedo != canRedo { self.canRedo = canRedo }
         let anchors = makeCurrentInkAnchors()
         if let anchors { self.savedInkAnchors = anchors }
         let data = newDrawing.dataRepresentation()
@@ -652,6 +769,11 @@ public final class BibleWorkspaceViewModel: ObservableObject {
             return
         }
 
+        let oldLeft = oldAnchors.isLeftHanded ?? false
+        let newLeft = isLeftHandedLayout
+        // Never retroactively shift ink across handedness switches; keep ink anchored to its authored layout.
+        guard oldLeft == newLeft else { return }
+
         // Check whether verse positions or column widths shifted meaningfully (> 8pt)
         var maxDelta: Double = abs(currentAnchors.scriptureWidth - oldAnchors.scriptureWidth)
         for (v, newRect) in currentAnchors.verseRects {
@@ -663,8 +785,13 @@ public final class BibleWorkspaceViewModel: ObservableObject {
         }
         guard maxDelta > 8.0 else { return }
 
-        let oldScriptureRight: Double = (oldAnchors.verseRects.values.map(\.maxX).max() ?? oldAnchors.scriptureWidth)
-        let newScriptureRight: Double = (currentAnchors.verseRects.values.map(\.maxX).max() ?? currentAnchors.scriptureWidth)
+        let oldScriptureMinX: Double = oldAnchors.verseRects.values.map(\.minX).min() ?? (oldLeft ? max(0, oldAnchors.canvasWidth - oldAnchors.scriptureWidth) : 0)
+        let oldScriptureMaxX: Double = oldAnchors.verseRects.values.map(\.maxX).max() ?? (oldScriptureMinX + oldAnchors.scriptureWidth)
+        let newScriptureMinX: Double = currentAnchors.verseRects.values.map(\.minX).min() ?? (newLeft ? max(0, currentAnchors.canvasWidth - currentAnchors.scriptureWidth) : 0)
+        let newScriptureMaxX: Double = currentAnchors.verseRects.values.map(\.maxX).max() ?? (newScriptureMinX + currentAnchors.scriptureWidth)
+
+        let oldMarginOriginX: Double = oldLeft ? 0.0 : (oldScriptureMaxX + 1.0)
+        let newMarginOriginX: Double = newLeft ? 0.0 : (newScriptureMaxX + 1.0)
 
         let sortedOldVerses = oldAnchors.verseRects.sorted { $0.key < $1.key }
         var reflowedStrokes: [PKStroke] = []
@@ -703,18 +830,17 @@ public final class BibleWorkspaceViewModel: ObservableObject {
             let targetMidY = newRect.minY + relY * newRect.height
             let dy = targetMidY - midY
 
+            let wasInMargin = oldLeft ? (midX < oldScriptureMinX - 4.0) : (midX > oldScriptureMaxX + 4.0)
             let dx: Double
-            if midX > oldScriptureRight + 4.0 {
-                // Margin handwriting tracks the right edge of the Scripture column
-                dx = newScriptureRight - oldScriptureRight
+            if wasInMargin {
+                // Margin handwriting translates cleanly to the active Journal Margin (without flipping letters!)
+                dx = newMarginOriginX - oldMarginOriginX
             } else {
                 // Over-Scripture underlines/circles track the Scripture column origin
                 dx = newRect.minX - oldRect.minX
             }
 
-            var moved = stroke
-            moved.transform = moved.transform.concatenating(CGAffineTransform(translationX: CGFloat(dx), y: CGFloat(dy)))
-            reflowedStrokes.append(moved)
+            reflowedStrokes.append(Self.bakedTranslatedStroke(stroke, dx: CGFloat(dx), dy: CGFloat(dy)))
         }
 
         let updatedDrawing = PKDrawing(strokes: reflowedStrokes)
@@ -848,7 +974,7 @@ public final class BibleWorkspaceViewModel: ObservableObject {
             syncModeFromPanels()
         }
         let yOffset = 90.0 + Double(pinnedReferences.count % 8) * 44.0
-        let posX = point.map { Double($0.x) } ?? defaultX
+        let posX = point.map { Double($0.x) } ?? defaultJournalMarginX(offset: 40.0)
         let posY = point.map { Double($0.y) } ?? yOffset
         let pin = PinnedReference(
             id: UUID().uuidString,
@@ -1190,7 +1316,7 @@ public final class BibleWorkspaceViewModel: ObservableObject {
 
     public func addStudyMarginLink(study: StudySession, verse: Int?, noteText: String) {
         let offset = Double(chapterStudyLinks.count % 5)
-        let startX: Double = showJournalPanel ? 430.0 + offset * 14.0 : 120.0 + offset * 14.0
+        let startX: Double = defaultJournalMarginX(offset: offset * 14.0)
         let startY: Double = 90.0 + offset * 48.0
         let link = StudyMarginLink(
             id: UUID().uuidString,
@@ -1239,11 +1365,67 @@ public final class BibleWorkspaceViewModel: ObservableObject {
     }
 
     public func handleIncomingURL(_ url: URL) {
+        if url.pathExtension.lowercased() == "sqmod" {
+            moduleManager.importLocalSQMod(url: url)
+            syncCommentarySelection()
+            showToast(moduleManager.statusMessage ?? "Imported study module")
+            return
+        }
         if let pkg = StudyPackageCodec.decode(from: url) {
             incomingStudyPackage = pkg
         } else {
             showToast("Could not read Study Lesson file or link")
         }
+    }
+
+    // MARK: - Modular Library & Commentaries
+
+    public func selectCommentaryModule(_ moduleId: String) {
+        selectedCommentaryModuleId = moduleId
+        studyDB.setPreference("selected_commentary_id", value: moduleId)
+        reloadChapterCommentary()
+    }
+
+    public func syncCommentarySelection() {
+        let enabled = moduleManager.enabledCommentaries
+        if enabled.isEmpty {
+            selectedCommentaryModuleId = nil
+            chapterCommentaryEntries = []
+            if leftPanelTab == .commentary {
+                leftPanelTab = .crossRefs
+            }
+            return
+        }
+        if let cur = selectedCommentaryModuleId, enabled.contains(where: { $0.id == cur }) {
+            reloadChapterCommentary()
+        } else {
+            selectedCommentaryModuleId = enabled.first?.id
+            reloadChapterCommentary()
+        }
+    }
+
+    public func reloadChapterCommentary() {
+        let enabled = moduleManager.enabledCommentaries
+        guard !enabled.isEmpty else {
+            chapterCommentaryEntries = []
+            return
+        }
+        let targetId: String
+        if let cur = selectedCommentaryModuleId, enabled.contains(where: { $0.id == cur }) {
+            targetId = cur
+        } else if let saved = studyDB.getPreference("selected_commentary_id"),
+                  enabled.contains(where: { $0.id == saved }) {
+            targetId = saved
+            selectedCommentaryModuleId = saved
+        } else {
+            targetId = enabled[0].id
+            selectedCommentaryModuleId = targetId
+        }
+        chapterCommentaryEntries = moduleManager.commentaryEntries(
+            moduleId: targetId,
+            bookId: currentBookId,
+            chapter: currentChapter
+        )
     }
 
     public func importStudyPackage(_ package: StudySharePackage, includeMarginNotes: Bool) {
@@ -1322,7 +1504,7 @@ public final class BibleWorkspaceViewModel: ObservableObject {
 
     public func placeStickerOnChapter(_ item: StickerItem) {
         let offsetIndex = Double(chapterStickers.count % 6)
-        let startX: Double = showJournalPanel ? 420.0 + offsetIndex * 16.0 : 120.0 + offsetIndex * 16.0
+        let startX: Double = defaultJournalMarginX(offset: offsetIndex * 16.0)
         let startY: Double = 110.0 + offsetIndex * 28.0
         let defaultSize: Double = item.kind == .symbol ? 68.0 : 96.0
         let placed = studyDB.addPlacedSticker(
@@ -1367,41 +1549,172 @@ public final class BibleWorkspaceViewModel: ObservableObject {
     }
 
     public func persistAppearancePreferences() {
-        studyDB.setPreference("theme", value: theme.rawValue)
+        studyDB.setPreference("theme", value: theme.id)
         studyDB.setPreference("font_size", value: String(fontSize))
+        studyDB.setPreference("study_desk_font_size", value: String(studyDeskFontSize))
+        studyDB.setPreference("scripture_font_design", value: scriptureFontDesign.rawValue)
         studyDB.setPreference("line_spacing", value: String(lineSpacing))
         studyDB.setPreference("paper_style", value: paperStyle.rawValue)
         studyDB.setPreference("pencil_only", value: pencilOnly ? "1" : "0")
         studyDB.setPreference("show_ink_reading", value: showInkInReadingMode ? "1" : "0")
         studyDB.setPreference("show_red_letter", value: showRedLetter ? "1" : "0")
         studyDB.setPreference("show_italics", value: showItalics ? "1" : "0")
+        studyDB.setPreference("show_verse_numbers", value: showVerseNumbers ? "1" : "0")
+        studyDB.setPreference("left_handed_layout", value: isLeftHandedLayout ? "1" : "0")
+        studyDB.setPreference("keep_screen_awake", value: keepScreenAwake ? "1" : "0")
+        persistCustomThemes()
     }
 
-    private func persistLayoutPreferences() {
+    public func saveCustomTheme(_ palette: CustomThemePalette, applyImmediately: Bool = true) {
+        if let idx = customThemes.firstIndex(where: { $0.id == palette.id }) {
+            customThemes[idx] = palette
+        } else {
+            customThemes.append(palette)
+        }
+        persistCustomThemes()
+        if applyImmediately {
+            theme = ReadingTheme.fromCustom(palette)
+            studyDB.setPreference("theme", value: theme.id)
+        }
+        showToast("Saved theme \"\(palette.name)\"")
+    }
+
+    public func deleteCustomTheme(_ palette: CustomThemePalette) {
+        customThemes.removeAll(where: { $0.id == palette.id })
+        persistCustomThemes()
+        if theme.id == "custom:\(palette.id)" {
+            theme = .paperSepia
+            studyDB.setPreference("theme", value: theme.id)
+        }
+    }
+
+    private func persistCustomThemes() {
+        if let data = try? JSONEncoder().encode(customThemes),
+           let json = String(data: data, encoding: .utf8) {
+            studyDB.setPreference("custom_themes_json", value: json)
+        }
+    }
+
+    public var allAvailableThemes: [ReadingTheme] {
+        ReadingTheme.allCases + customThemes.map { ReadingTheme.fromCustom($0) }
+    }
+
+    public func persistLayoutPreferences() {
         studyDB.setPreference("show_ref", value: showReferencePanel ? "1" : "0")
         studyDB.setPreference("show_journal", value: showJournalPanel ? "1" : "0")
+        studyDB.setPreference("left_panel_width", value: String(format: "%.1f", Double(leftPanelWidth)))
         studyDB.setPreference("ref_filter", value: referenceFilter.rawValue)
     }
 
     private func restorePreferences() {
+        if let raw = studyDB.getPreference("custom_themes_json"),
+           let d = raw.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode([CustomThemePalette].self, from: d) {
+            customThemes = decoded
+        }
         if let b = studyDB.getPreference("last_book_id").flatMap(Int.init) { currentBookId = b }
         if let c = studyDB.getPreference("last_chapter").flatMap(Int.init) { currentChapter = c }
-        if let t = studyDB.getPreference("theme").flatMap(ReadingTheme.init(rawValue:)) { theme = t }
+        if let tId = studyDB.getPreference("theme") {
+            if let builtIn = ReadingTheme(rawValue: tId) {
+                theme = builtIn
+            } else if tId.hasPrefix("custom:") {
+                let cid = String(tId.dropFirst("custom:".count))
+                if let custom = customThemes.first(where: { $0.id == cid }) {
+                    theme = ReadingTheme.fromCustom(custom)
+                }
+            }
+        }
         if let f = studyDB.getPreference("font_size").flatMap(Double.init) { fontSize = f }
+        if let sf = studyDB.getPreference("study_desk_font_size").flatMap(Double.init) { studyDeskFontSize = sf }
+        if let fd = studyDB.getPreference("scripture_font_design").flatMap(ScriptureFontDesign.init(rawValue:)) { scriptureFontDesign = fd }
         if let l = studyDB.getPreference("line_spacing").flatMap(Double.init) { lineSpacing = l }
         if let p = studyDB.getPreference("paper_style").flatMap(JournalPaperStyle.init(rawValue:)) { paperStyle = p }
         if let po = studyDB.getPreference("pencil_only") { pencilOnly = (po != "0") }
         if let sir = studyDB.getPreference("show_ink_reading") { showInkInReadingMode = (sir == "1") }
         if let srl = studyDB.getPreference("show_red_letter") { showRedLetter = (srl != "0") }
         if let sit = studyDB.getPreference("show_italics") { showItalics = (sit != "0") }
+        if let svn = studyDB.getPreference("show_verse_numbers") { showVerseNumbers = (svn != "0") }
+        if let lh = studyDB.getPreference("left_handed_layout") { isLeftHandedLayout = (lh == "1") }
+        if let ka = studyDB.getPreference("keep_screen_awake") { keepScreenAwake = (ka == "1") }
+        let hasOnboarded = studyDB.getPreference("has_completed_onboarding") == "1"
+        if !hasOnboarded {
+            // Only show the 1-time handedness setup for brand-new users (not returning users with history/notes)
+            let isBrandNew = studyDB.recentHistory(limit: 1).isEmpty && studyDB.allNotes().isEmpty
+            if isBrandNew {
+                showHandednessOnboarding = true
+            } else {
+                studyDB.setPreference("has_completed_onboarding", value: "1")
+            }
+        }
         if let sr = studyDB.getPreference("show_ref") { showReferencePanel = (sr != "0") }
         if let sj = studyDB.getPreference("show_journal") { showJournalPanel = (sj != "0") }
+        if let lpw = studyDB.getPreference("left_panel_width").flatMap(Double.init) { leftPanelWidth = CGFloat(lpw) }
         if let rf = studyDB.getPreference("ref_filter").flatMap(ReferenceSourceFilter.init(rawValue:)) { referenceFilter = rf }
         if let sar = studyDB.getPreference("show_all_refs") { showAllReferencesExpanded = (sar == "1") }
         if let pb = studyDB.getPreference("parallel_book_id").flatMap(Int.init) { parallelBookId = pb }
         if let pc = studyDB.getPreference("parallel_chapter").flatMap(Int.init) { parallelChapter = pc }
         if let ta = studyDB.getPreference("teacher_author_name") { teacherAuthorName = ta }
+        if let raw = studyDB.getPreference("pinned_study_ids"), let d = raw.data(using: .utf8), let arr = try? JSONDecoder().decode([String].self, from: d) {
+            pinnedStudyIds = Set(arr)
+        }
+        if let raw = studyDB.getPreference("archived_study_ids"), let d = raw.data(using: .utf8), let arr = try? JSONDecoder().decode([String].self, from: d) {
+            archivedStudyIds = Set(arr)
+        }
+        if let raw = studyDB.getPreference("starred_trail_entry_ids"), let d = raw.data(using: .utf8), let arr = try? JSONDecoder().decode([String].self, from: d) {
+            starredTrailEntryIds = Set(arr)
+        }
         syncModeFromPanels()
+    }
+
+    public var quickMenuStudies: [StudySession] {
+        let nonArchived = studySessions.filter { !archivedStudyIds.contains($0.id) }
+        let pinned = nonArchived.filter { pinnedStudyIds.contains($0.id) }
+        let unpinned = nonArchived.filter { !pinnedStudyIds.contains($0.id) }
+        return Array((pinned + unpinned).prefix(6))
+    }
+
+    public func togglePinStudy(_ studyId: String) {
+        if pinnedStudyIds.contains(studyId) {
+            pinnedStudyIds.remove(studyId)
+        } else {
+            pinnedStudyIds.insert(studyId)
+            archivedStudyIds.remove(studyId)
+        }
+        persistStudyOrganization()
+    }
+
+    public func toggleArchiveStudy(_ studyId: String) {
+        if archivedStudyIds.contains(studyId) {
+            archivedStudyIds.remove(studyId)
+        } else {
+            archivedStudyIds.insert(studyId)
+            pinnedStudyIds.remove(studyId)
+            if activeStudy?.id == studyId {
+                exitActiveStudy()
+            }
+        }
+        persistStudyOrganization()
+    }
+
+    public func toggleStarTrailEntry(_ entryId: String) {
+        if starredTrailEntryIds.contains(entryId) {
+            starredTrailEntryIds.remove(entryId)
+        } else {
+            starredTrailEntryIds.insert(entryId)
+        }
+        persistStudyOrganization()
+    }
+
+    private func persistStudyOrganization() {
+        if let d = try? JSONEncoder().encode(Array(pinnedStudyIds)), let s = String(data: d, encoding: .utf8) {
+            studyDB.setPreference("pinned_study_ids", value: s)
+        }
+        if let d = try? JSONEncoder().encode(Array(archivedStudyIds)), let s = String(data: d, encoding: .utf8) {
+            studyDB.setPreference("archived_study_ids", value: s)
+        }
+        if let d = try? JSONEncoder().encode(Array(starredTrailEntryIds)), let s = String(data: d, encoding: .utf8) {
+            studyDB.setPreference("starred_trail_entry_ids", value: s)
+        }
     }
 
     public func showToast(_ msg: String) {
