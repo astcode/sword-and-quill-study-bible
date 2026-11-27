@@ -18,7 +18,9 @@ public final class BibleWorkspaceViewModel: ObservableObject {
     @Published public var chapterPlaces: [BiblicalPlace] = []
 
     // User study state for active chapter
-    @Published public var chapterDrawing: PKDrawing = PKDrawing()
+    // Intentionally NOT @Published: UnifiedBibleCanvas reads chapterDrawing only when drawingRevision changes,
+    // preventing full-workspace SwiftUI redraws while writing with Apple Pencil!
+    public var chapterDrawing: PKDrawing = PKDrawing()
     @Published public var drawingRevision: Int = 0
     @Published public var chapterHighlights: [Int: UserHighlight] = [:]
     @Published public var pinnedReferences: [PinnedReference] = []
@@ -901,8 +903,8 @@ public final class BibleWorkspaceViewModel: ObservableObject {
 
     public func handleCanvasDrawingChanged(_ newDrawing: PKDrawing, canUndo: Bool, canRedo: Bool) {
         self.chapterDrawing = newDrawing
-        self.canUndo = canUndo
-        self.canRedo = canRedo
+        if self.canUndo != canUndo { self.canUndo = canUndo }
+        if self.canRedo != canRedo { self.canRedo = canRedo }
         let anchors = makeCurrentInkAnchors()
         if let anchors { self.savedInkAnchors = anchors }
         let data = newDrawing.dataRepresentation()
